@@ -24,7 +24,6 @@ interface Customer {
   id: string
   first_name: string
   last_name: string
-  email: string
   phone_number: string
 }
 
@@ -66,6 +65,7 @@ export default function CustomerOrdersTab() {
   const [orders, setOrders] = useState<CustomerOrder[]>([])
   const [filteredOrders, setFilteredOrders] = useState<CustomerOrder[]>([])
   const [searchTerm, setSearchTerm] = useState("")
+  const [archivedSearchTerm, setArchivedSearchTerm] = useState("")
   const [isOpen, setIsOpen] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editingOrder, setEditingOrder] = useState<CustomerOrder | null>(null)
@@ -224,7 +224,7 @@ export default function CustomerOrdersTab() {
       } else {
         // When creating new order, find or create customer
         const existingCustomer = customers.find(
-          (c) => c.phone_number === formData.phone_number && c.first_name === formData.first_name,
+          (c) => c.phone_number === formData.phone_number && c.first_name === formData.first_name && c.last_name === formData.last_name,
         )
 
         if (existingCustomer) {
@@ -307,6 +307,7 @@ export default function CustomerOrdersTab() {
     }
   }
 
+  
   const confirmStatusChange = async (newStatus: string) => {
     try {
       const { error } = await supabase
@@ -390,6 +391,12 @@ export default function CustomerOrdersTab() {
 
   const activeOrders = filteredOrders.filter((o) => !o.is_archived)
   const archivedOrders = filteredOrders.filter((o) => o.is_archived)
+  const filteredArchivedOrders = archivedOrders.filter(
+    (order) =>
+      order.customer_name.toLowerCase().includes(archivedSearchTerm.toLowerCase()) ||
+      order.order_reference.toLowerCase().includes(archivedSearchTerm.toLowerCase()) ||
+      (order.deletion_reason && order.deletion_reason.toLowerCase().includes(archivedSearchTerm.toLowerCase()))
+  )
   const pendingOrders = activeOrders.filter((o) => o.status === "en attente")
 
   const totalSales = orders.reduce((sum, order) => sum + order.total_amount, 0)
@@ -748,13 +755,28 @@ export default function CustomerOrdersTab() {
         </TabsContent>
 
         <TabsContent value="archived" className="space-y-4">
+          {/* Search field for archived orders */}
+          <div className="relative">
+            <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Rechercher dans les commandes archivées..."
+              value={archivedSearchTerm}
+              onChange={(e) => setArchivedSearchTerm(e.target.value)}
+              className="pl-10"
+            />
+          </div>
+
           {archivedOrders.length === 0 ? (
             <Card>
-              <CardContent className="pt-6 text-center text-muted-foreground">Aucune commande archivée</CardContent>
+              <CardContent className="pt-6 text-center text-muted-foreground">
+                {orders.filter((o) => o.is_archived).length === 0
+                  ? "Aucune commande archivée"
+                  : "Aucune commande archivée ne correspond à votre recherche."}
+              </CardContent>
             </Card>
           ) : (
             <div className="space-y-4">
-              {archivedOrders.map((order) => (
+              {filteredArchivedOrders.map((order) => (
                 <Card key={order.id} className="opacity-75">
                   <CardHeader className="pb-3">
                     <div className="flex items-center justify-between">

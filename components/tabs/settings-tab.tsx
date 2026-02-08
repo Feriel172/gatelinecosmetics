@@ -25,10 +25,14 @@ interface Customer {
   id: string
   first_name: string
   last_name: string
-  email: string
   phone_number: string
   instagram_handle: string
   created_at: string
+  orderStats?: {
+    total: number
+    validated: number
+    canceled: number
+  }
 }
 
 export default function SettingsTab() {
@@ -54,7 +58,6 @@ export default function SettingsTab() {
   const [customerForm, setCustomerForm] = useState({
     first_name: "",
     last_name: "",
-    email: "",
     phone_number: "",
     instagram_handle: "",
   })
@@ -75,15 +78,34 @@ export default function SettingsTab() {
   const fetchData = async () => {
     try {
       setIsLoading(true)
-      const [suppliersRes, customersRes, professionnelsRes] = await Promise.all([
+      const [suppliersRes, customersRes, professionnelsRes, ordersRes] = await Promise.all([
         supabase.from("suppliers").select("*").order("name"),
         supabase.from("customers").select("*").order("created_at", { ascending: false }),
         supabase.from("professionnels").select("*").order("created_at", { ascending: false }),
+        supabase.from("customer_orders").select("customer_id, status, is_archived"),
       ])
 
       setSuppliers(suppliersRes.data || [])
-      setCustomers(customersRes.data || [])
       setProfessionnels(professionnelsRes.data || [])
+
+      // Process customers with order statistics
+      const customersWithStats = (customersRes.data || []).map((customer: any) => {
+        const customerOrders = (ordersRes.data || []).filter((order: any) => order.customer_id === customer.id)
+        const total = customerOrders.length
+        const validated = customerOrders.filter((order: any) => order.status === "confirmée").length
+        const canceled = customerOrders.filter((order: any) => order.is_archived === true).length
+
+        return {
+          ...customer,
+          orderStats: {
+            total,
+            validated,
+            canceled,
+          },
+        }
+      })
+
+      setCustomers(customersWithStats)
     } catch (error) {
       console.error("Error fetching data:", error)
     } finally {
@@ -166,7 +188,6 @@ export default function SettingsTab() {
           .update({
             first_name: customerForm.first_name,
             last_name: customerForm.last_name,
-            email: customerForm.email,
             phone_number: customerForm.phone_number,
             instagram_handle: customerForm.instagram_handle || null,
           })
@@ -177,7 +198,6 @@ export default function SettingsTab() {
         const { error } = await supabase.from("customers").insert({
           first_name: customerForm.first_name,
           last_name: customerForm.last_name,
-          email: customerForm.email,
           phone_number: customerForm.phone_number,
           instagram_handle: customerForm.instagram_handle || null,
         })
@@ -230,7 +250,6 @@ export default function SettingsTab() {
     return (
       customer.first_name.toLowerCase().includes(searchLower) ||
       customer.last_name.toLowerCase().includes(searchLower) ||
-      customer.email.toLowerCase().includes(searchLower) ||
       customer.phone_number.includes(searchTerm)
     )
   })
@@ -495,7 +514,6 @@ export default function SettingsTab() {
                       setCustomerForm({
                         first_name: "",
                         last_name: "",
-                        email: "",
                         phone_number: "",
                         instagram_handle: "",
                       })
@@ -531,16 +549,7 @@ export default function SettingsTab() {
                           required
                         />
                       </div>
-                      <div>
-                        <Label htmlFor="email">Email</Label>
-                        <Input
-                          id="email"
-                          type="email"
-                          value={customerForm.email}
-                          onChange={(e) => setCustomerForm({ ...customerForm, email: e.target.value })}
-                          required
-                        />
-                      </div>
+
                       <div>
                         <Label htmlFor="phone_number">Téléphone</Label>
                         <Input
@@ -598,10 +607,6 @@ export default function SettingsTab() {
                     <CardContent className="space-y-3">
                       <div className="text-sm space-y-2">
                         <div>
-                          <p className="text-muted-foreground text-xs">Email</p>
-                          <p className="break-all">{customer.email}</p>
-                        </div>
-                        <div>
                           <p className="text-muted-foreground text-xs">Téléphone</p>
                           <p>{customer.phone_number}</p>
                         </div>
@@ -615,6 +620,25 @@ export default function SettingsTab() {
                           <p className="text-muted-foreground text-xs">Membre Depuis</p>
                           <p>{new Date(customer.created_at).toLocaleDateString("fr-FR")}</p>
                         </div>
+                        {customer.orderStats && (
+                          <div className="pt-2 border-t">
+                            <p className="text-muted-foreground text-xs mb-2">Statistiques des Commandes</p>
+                            <div className="grid grid-cols-3 gap-2 text-center">
+                              <div className="bg-blue-50 p-2 rounded">
+                                <p className="text-lg font-bold text-blue-600">{customer.orderStats.total}</p>
+                                <p className="text-xs text-blue-600">Total</p>
+                              </div>
+                              <div className="bg-green-50 p-2 rounded">
+                                <p className="text-lg font-bold text-green-600">{customer.orderStats.validated}</p>
+                                <p className="text-xs text-green-600">Validées</p>
+                              </div>
+                              <div className="bg-orange-50 p-2 rounded">
+                                <p className="text-lg font-bold text-orange-600">{customer.orderStats.canceled}</p>
+                                <p className="text-xs text-orange-600">Annulées</p>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                       <div className="flex gap-2">
                         <Button

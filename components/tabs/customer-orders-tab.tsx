@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { Plus, Trash2, Copy, Search, Archive, RotateCcw, CheckCircle2, Edit } from "lucide-react"
+import { Plus, Trash2, Copy, Search, Archive, RotateCcw, CheckCircle2, Edit, RefreshCw } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 interface Product {
@@ -54,6 +54,7 @@ interface CustomerOrder {
   city?: string
   address?: string
   is_archived: boolean
+  is_swapped?: boolean
   deletion_reason?: string
   status_comment?: string
 }
@@ -77,6 +78,19 @@ export default function CustomerOrdersTab() {
     isOpen: false,
     orderId: "",
     comment: "",
+  })
+  const [swapModal, setSwapModal] = useState<{
+    isOpen: boolean
+    orderId: string
+    orderItems: OrderItem[]
+    suggestions: CustomerOrder[]
+    selectedOrderId: string
+  }>({
+    isOpen: false,
+    orderId: "",
+    orderItems: [],
+    suggestions: [],
+    selectedOrderId: "",
   })
   const [deleteModal, setDeleteModal] = useState<{ isOpen: boolean; orderId: string; reason: string }>({
     isOpen: false,
@@ -361,6 +375,155 @@ export default function CustomerOrdersTab() {
     }
   }
 
+  const handleSwapOrder = async (id: string) => {
+    const order = orders.find((o) => o.id === id)
+    if (!order || !order.order_items) return
+
+    // Find orders with exactly the same products and quantities
+    // Must be: not archived, status = "en attente", and not the same order
+    const suggestions = orders.filter((o) => {
+      if (o.id === id) return false
+      if (o.is_archived) return false
+      if (o.status !== "en attente") return false
+      if (!o.order_items || o.order_items.length !== order.order_items.length) return false
+
+      // Check if all items match exactly (same product_id and quantity)
+      const sortedA = [...order.order_items].sort((a, b) => a.product_id.localeCompare(b.product_id))
+      const sortedB = [...o.order_items].sort((a, b) => a.product_id.localeCompare(b.product_id))
+
+      return sortedA.every((item, idx) => {
+        const other = sortedB[idx]
+        return item.product_id === other.product_id && item.quantity === other.quantity
+      })
+    })
+
+    setSwapModal({
+      isOpen: true,
+      orderId: id,
+      orderItems: order.order_items,
+      suggestions,
+      selectedOrderId: suggestions.length > 0 ? suggestions[0].id : "",
+    })
+  }
+
+  const confirmSwap = async () => {
+    const sourceOrder = orders.find((o) => o.id === swapModal.orderId)
+    const targetOrder = orders.find((o) => o.id === swapModal.selectedOrderId)
+    if (!sourceOrder || !targetOrder) {
+      alert("Commande source ou cible introuvable")
+      return
+    }
+
+    try {
+      const swapDate = new Date().toISOString()
+      const swapInfo = JSON.stringify({
+        type: "swap_history",
+        swapped_with_order_id: targetOrder.id,
+        swapped_with_customer_name: targetOrder.customer_name,
+        swapped_with_order_reference: targetOrder.order_reference,
+        swap_date: swapDate,
+      })
+
+      const targetInfo = JSON.stringify({
+        type: "swap_target",
+        swap_source_order_id: sourceOrder.id,
+        swap_source_customer_name: sourceOrder.customer_name,
+        swap_source_order_reference: sourceOrder.order_reference,
+        swap_date: swapDate,
+      })
+
+      console.log("[Swap] Source order ID:", sourceOrder.id)
+      console.log("[Swap] Target order ID:", targetOrder.id)
+      console.log("[Swap] Swap info:", swapInfo)
+      console.log("[Swap] Target info:", targetInfo)
+
+      // Update source order: mark as swapped, archive it (so it goes to swap section)
+      const { data: sourceData, error: sourceError } = await supabase
+        .from("customer_orders")
+        .update({
+          is_swapped: true,
+          is_archived: true,
+          status_comment: swapInfo,
+        })
+        .eq("id", sourceOrder.id)
+        .select()
+
+      if (sourceError) {
+        console.error("[Swap] Source update error:", sourceError)
+        throw new Error(`Source update failed: ${sourceError.message}`)
+      }
+      console.log("[Swap] Source update success:", sourceData)
+
+      // Update target order: add swap source info but keep it active
+      const { data: targetData, error: targetError } = await supabase
+        .from("customer_orders")
+        .update({
+          status_comment: targetInfo,
+        })
+        .eq("id", targetOrder.id)
+        .select()
+
+      if (targetError) {
+        console.error("[Swap] Target update error:", targetError)
+        throw new Error(`Target update failed: ${targetError.message}`)
+      }
+      console.log("[Swap] Target update success:", targetData)
+
+      setSwapModal({
+        isOpen: false,
+        orderId: "",
+        orderItems: [],
+        suggestions: [],
+        selectedOrderId: "",
+      })
+      await fetchData()
+    } catch (error: any) {
+      console.error("[Swap] Error confirming swap:", error)
+      alert(`Impossible d'effectuer l'échange: ${error?.message || "Erreur inconnue"}`)
+    }
+  }
+
+  const getSwapSourceInfo = (orderId: string) => {
+    // Find if any swapped order points to this order as the target
+    const swappedOrder = orders.find((o) => {
+      if (!o.status_comment) return false
+      try {
+        const data = JSON.parse(o.status_comment)
+        return data.type === "swap_history" && data.swapped_with_order_id === orderId
+      } catch {
+        return false
+      }
+    })
+    if (!swappedOrder) return null
+    try {
+      return JSON.parse(swappedOrder.status_comment)
+    } catch {
+      return null
+    }
+  }
+
+  const getSwapHistory = (order: CustomerOrder) => {
+    if (!order.status_comment) return null
+    try {
+      const data = JSON.parse(order.status_comment)
+      if (data.type === "swap_history") return data
+      return null
+    } catch {
+      return null
+    }
+  }
+
+  const getSwapTargetInfo = (order: CustomerOrder) => {
+    if (!order.status_comment) return null
+    try {
+      const data = JSON.parse(order.status_comment)
+      if (data.type === "swap_target") return data
+      return null
+    } catch {
+      return null
+    }
+  }
+
   const handleEditOrder = (order: CustomerOrder) => {
     const customer = customers.find((c) => c.id === order.customer_id)
     if (customer) {
@@ -390,7 +553,7 @@ export default function CustomerOrdersTab() {
   }
 
   const activeOrders = filteredOrders.filter((o) => !o.is_archived)
-  const archivedOrders = filteredOrders.filter((o) => o.is_archived)
+  const archivedOrders = filteredOrders.filter((o) => o.is_archived && !o.is_swapped)
   const filteredArchivedOrders = archivedOrders.filter(
     (order) =>
       order.customer_name.toLowerCase().includes(archivedSearchTerm.toLowerCase()) ||
@@ -398,22 +561,36 @@ export default function CustomerOrdersTab() {
       (order.deletion_reason && order.deletion_reason.toLowerCase().includes(archivedSearchTerm.toLowerCase()))
   )
   const pendingOrders = activeOrders.filter((o) => o.status === "en attente")
+  const swappedOrders = orders.filter((o) => o.is_swapped)
 
-  const totalSales = orders.reduce((sum, order) => sum + order.total_amount, 0)
+  const confirmedOrders = orders.filter((o) => o.status === "confirmée")
+  const archivedOrdersCount = confirmedOrders.filter((o) => o.is_archived).length
+  const swappedOrdersCount = confirmedOrders.filter((o) => o.is_swapped).length
+  const totalSales = confirmedOrders.reduce((sum, order) => sum + order.subtotal, 0) - archivedOrdersCount * 200 - swappedOrdersCount * 100
   const totalOrders = orders.length
 
   const getMonthlyStats = () => {
-    const monthlyOrders: { [key: string]: { count: number; sales: number } } = {}
-    orders.forEach(order => {
+    const monthlyOrders: { [key: string]: { count: number; sales: number; archivedCount: number; swappedCount: number } } = {}
+    orders.filter((o) => o.status === "confirmée").forEach(order => {
       const date = new Date(order.order_date)
       const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
       if (!monthlyOrders[monthKey]) {
-        monthlyOrders[monthKey] = { count: 0, sales: 0 }
+        monthlyOrders[monthKey] = { count: 0, sales: 0, archivedCount: 0, swappedCount: 0 }
       }
       monthlyOrders[monthKey].count += 1
-      monthlyOrders[monthKey].sales += order.total_amount
+      monthlyOrders[monthKey].sales += order.subtotal
+      if (order.is_archived) {
+        monthlyOrders[monthKey].archivedCount += 1
+      }
+      if (order.is_swapped) {
+        monthlyOrders[monthKey].swappedCount += 1
+      }
     })
-    return Object.entries(monthlyOrders).sort(([a], [b]) => b.localeCompare(a))
+    return Object.entries(monthlyOrders).map(([month, stats]) => ({
+      month,
+      count: stats.count,
+      sales: stats.sales - stats.archivedCount * 200 - stats.swappedCount * 100,
+    })).sort((a, b) => b.month.localeCompare(a.month))
   }
 
   return (
@@ -569,10 +746,11 @@ export default function CustomerOrdersTab() {
       </div>
 
       <Tabs defaultValue="active" className="w-full">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="active">Commandes ({activeOrders.length})</TabsTrigger>
           <TabsTrigger value="pending">En Attente ({pendingOrders.length})</TabsTrigger>
           <TabsTrigger value="archived">Archivées ({archivedOrders.length})</TabsTrigger>
+          <TabsTrigger value="swaps">Swaps ({swappedOrders.length})</TabsTrigger>
           <TabsTrigger value="statistics">Statistiques</TabsTrigger>
         </TabsList>
 
@@ -611,6 +789,17 @@ export default function CustomerOrdersTab() {
                           <Button variant="ghost" size="sm" onClick={() => copyToClipboard(order.order_reference)}>
                             <Copy className="h-3 w-3" />
                           </Button>
+                          {(() => {
+                            const swapSource = getSwapSourceInfo(order.id)
+                            if (swapSource) {
+                              return (
+                                <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded font-medium">
+                                  swap
+                                </span>
+                              )
+                            }
+                            return null
+                          })()}
                         </div>
                         <p className="text-sm text-muted-foreground mt-1">
                           {new Date(order.order_date).toLocaleDateString("fr-FR")} • {order.address}, {order.city}
@@ -641,14 +830,28 @@ export default function CustomerOrdersTab() {
                           <CheckCircle2 className="h-4 w-4 mr-2" />
                           {order.status === "en attente" ? "Confirmer" : "Annuler"}
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleArchiveOrder(order.id)}
-                          className="text-destructive hover:text-destructive"
-                        >
-                          <Archive className="h-4 w-4" />
-                        </Button>
+                        {order.status === "en attente" && (
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleArchiveOrder(order.id)}
+                              className="text-destructive hover:text-destructive"
+                            >
+                              <Archive className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleSwapOrder(order.id)}
+                              className={order.is_swapped ? "text-blue-600 border-blue-600 hover:text-blue-600 hover:bg-blue-50" : "text-muted-foreground border-muted-foreground hover:text-blue-600 hover:border-blue-600 hover:bg-blue-50"}
+                              title={order.is_swapped ? "Déjà échangé" : "Marquer comme échangé"}
+                            >
+                              <RefreshCw className="h-4 w-4 mr-1" />
+                              {order.is_swapped ? "Échangé" : "swap"}
+                            </Button>
+                          </>
+                        )}
                       </div>
                     </div>
                   </CardHeader>
@@ -666,12 +869,35 @@ export default function CustomerOrdersTab() {
                         </ul>
                       </div>
                     )}
-                    {order.status_comment && (
+                    {order.status_comment && !(() => {
+                      try {
+                        const data = JSON.parse(order.status_comment)
+                        return data.type === "swap_target" || data.type === "swap_history"
+                      } catch {
+                        return false
+                      }
+                    })() && (
                       <div className="bg-blue-50 p-3 rounded text-sm border border-blue-200">
                         <p className="font-semibold text-blue-900 mb-1">Commentaire:</p>
                         <p className="text-blue-800 text-xs">{order.status_comment}</p>
                       </div>
                     )}
+                    {(() => {
+                      const swapTarget = getSwapTargetInfo(order)
+                      if (swapTarget) {
+                        return (
+                          <div className="bg-blue-50 p-3 rounded text-sm border border-blue-200">
+                            <p className="font-semibold text-blue-900 mb-2">swap</p>
+                            <div className="space-y-1 text-xs text-blue-800">
+                              <p><strong>Client source:</strong> {swapTarget.swap_source_customer_name}</p>
+                              <p><strong>Réf. commande source:</strong> {swapTarget.swap_source_order_reference}</p>
+                              <p><strong>Date de l'échange:</strong> {new Date(swapTarget.swap_date).toLocaleDateString("fr-FR", { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+                            </div>
+                          </div>
+                        )
+                      }
+                      return null
+                    })()}
                     <div className="border-t border-border pt-3 space-y-2">
                       <div className="flex justify-between text-sm">
                         <span className="text-muted-foreground">Sous-total</span>
@@ -708,6 +934,17 @@ export default function CustomerOrdersTab() {
                         <div className="flex items-center gap-2">
                           <CardTitle className="text-lg">{order.customer_name}</CardTitle>
                           <code className="text-xs bg-muted px-2 py-1 rounded">{order.order_reference}</code>
+                          {(() => {
+                            const swapSource = getSwapSourceInfo(order.id)
+                            if (swapSource) {
+                              return (
+                                <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded font-medium">
+                                  swap
+                                </span>
+                              )
+                            }
+                            return null
+                          })()}
                         </div>
                         <p className="text-sm text-muted-foreground mt-1">
                           {new Date(order.order_date).toLocaleDateString("fr-FR")} • {order.address}, {order.city}
@@ -733,6 +970,22 @@ export default function CustomerOrdersTab() {
                         </ul>
                       </div>
                     )}
+                    {(() => {
+                      const swapTarget = getSwapTargetInfo(order)
+                      if (swapTarget) {
+                        return (
+                          <div className="bg-blue-50 p-3 rounded text-sm border border-blue-200">
+                            <p className="font-semibold text-blue-900 mb-2">swap</p>
+                            <div className="space-y-1 text-xs text-blue-800">
+                              <p><strong>Client source:</strong> {swapTarget.swap_source_customer_name}</p>
+                              <p><strong>Réf. commande source:</strong> {swapTarget.swap_source_order_reference}</p>
+                              <p><strong>Date de l'échange:</strong> {new Date(swapTarget.swap_date).toLocaleDateString("fr-FR", { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+                            </div>
+                          </div>
+                        )
+                      }
+                      return null
+                    })()}
                     <div className="border-t border-border pt-3 space-y-2">
                       <div className="flex justify-between text-sm">
                         <span className="text-muted-foreground">Sous-total</span>
@@ -808,6 +1061,81 @@ export default function CustomerOrdersTab() {
           )}
         </TabsContent>
 
+        <TabsContent value="swaps" className="space-y-4">
+          {swappedOrders.length === 0 ? (
+            <Card>
+              <CardContent className="pt-6 text-center text-muted-foreground">
+                Aucune commande échangée
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-4">
+              {swappedOrders.map((order) => {
+                const swapHistory = getSwapHistory(order)
+                return (
+                  <Card key={order.id} className="opacity-75 border-blue-200">
+                    <CardHeader className="pb-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <CardTitle className="text-lg">{order.customer_name}</CardTitle>
+                            <code className="text-xs bg-muted px-2 py-1 rounded">{order.order_reference}</code>
+                            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded font-medium">
+                              Échangé
+                            </span>
+                          </div>
+                          <p className="text-sm text-muted-foreground mt-1">
+                            {new Date(order.order_date).toLocaleDateString("fr-FR")}
+                          </p>
+                        </div>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {swapHistory && (
+                        <div className="bg-blue-50 p-3 rounded text-sm border border-blue-200">
+                          <p className="font-semibold text-blue-900 mb-2">Historique de l'échange</p>
+                          <div className="space-y-1 text-xs text-blue-800">
+                            <p><strong>Client remplaçant:</strong> {swapHistory.swapped_with_customer_name}</p>
+                            <p><strong>Réf. commande remplaçante:</strong> {swapHistory.swapped_with_order_reference}</p>
+                            <p><strong>Date de l'échange:</strong> {new Date(swapHistory.swap_date).toLocaleDateString("fr-FR", { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+                          </div>
+                        </div>
+                      )}
+                      {order.order_items && order.order_items.length > 0 && (
+                        <div className="bg-muted p-3 rounded text-sm">
+                          <p className="font-semibold mb-2">Produits échangés:</p>
+                          <ul className="space-y-1 text-xs">
+                            {order.order_items.map((item: any, idx: number) => (
+                              <li key={idx}>
+                                {item.product_name}: {item.quantity} x {formatCurrency(item.price)} ={" "}
+                                {formatCurrency(Number.parseFloat(item.quantity) * item.price)}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      <div className="border-t border-border pt-3">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-muted-foreground">Sous-total</span>
+                          <span>{formatCurrency(order.subtotal)}</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-muted-foreground">Livraison</span>
+                          <span>{formatCurrency(order.delivery_cost)}</span>
+                        </div>
+                        <div className="flex justify-between font-bold mt-1">
+                          <span>Total</span>
+                          <span className="text-accent">{formatCurrency(order.total_amount)}</span>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )
+              })}
+            </div>
+          )}
+        </TabsContent>
+
         <TabsContent value="statistics" className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <Card>
@@ -832,14 +1160,14 @@ export default function CustomerOrdersTab() {
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">
-                  {getMonthlyStats().map(([month, stats]) => (
+                  {getMonthlyStats().map(({month, count, sales}) => (
                     <div key={month} className="flex justify-between items-center p-3 bg-muted rounded">
                       <div>
                         <p className="font-medium">{new Date(month + '-01').toLocaleDateString('fr-FR', { year: 'numeric', month: 'long' })}</p>
-                        <p className="text-sm text-muted-foreground">{stats.count} commande{stats.count > 1 ? 's' : ''}</p>
+                        <p className="text-sm text-muted-foreground">{count} commande{count > 1 ? 's' : ''}</p>
                       </div>
                       <div className="text-right">
-                        <p className="font-bold text-accent">{formatCurrency(stats.sales)}</p>
+                        <p className="font-bold text-accent">{formatCurrency(sales)}</p>
                       </div>
                     </div>
                   ))}
@@ -893,7 +1221,110 @@ export default function CustomerOrdersTab() {
         </Dialog>
       )}
 
-      {/* Delete modal */}
+      {/* Swap modal */}
+      {swapModal.isOpen && (
+        <Dialog
+          open={swapModal.isOpen}
+          onOpenChange={(open) =>
+            !open &&
+            setSwapModal({
+              isOpen: false,
+              orderId: "",
+              orderItems: [],
+              suggestions: [],
+              selectedOrderId: "",
+            })
+          }
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Échanger la Commande</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="bg-muted p-3 rounded text-sm">
+                <p className="font-semibold mb-2">Produits de la commande actuelle:</p>
+                <ul className="space-y-1 text-xs">
+                  {swapModal.orderItems.map((item, idx) => (
+                    <li key={idx}>
+                      {item.product_name}: {item.quantity}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              {swapModal.suggestions.length === 0 ? (
+                <p className="text-muted-foreground text-sm">
+                  Aucune commande en attente ne correspond exactement aux mêmes produits et quantités.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-sm font-medium">Sélectionnez une commande à échanger:</p>
+                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                    {swapModal.suggestions.map((suggestion) => (
+                      <div
+                        key={suggestion.id}
+                        className={`p-3 rounded border cursor-pointer transition-colors ${
+                          swapModal.selectedOrderId === suggestion.id
+                            ? "border-blue-500 bg-blue-50"
+                            : "border-border hover:border-blue-300"
+                        }`}
+                        onClick={() =>
+                          setSwapModal({ ...swapModal, selectedOrderId: suggestion.id })
+                        }
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="font-medium text-sm">{suggestion.customer_name}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {suggestion.order_reference}
+                            </p>
+                          </div>
+                          {swapModal.selectedOrderId === suggestion.id && (
+                            <CheckCircle2 className="h-4 w-4 text-blue-500" />
+                          )}
+                        </div>
+                        <div className="mt-2 text-xs text-muted-foreground">
+                          {suggestion.order_items?.map((item: any, idx: number) => (
+                            <span key={idx}>
+                              {item.product_name}: {item.quantity}
+                              {idx < (suggestion.order_items?.length || 0) - 1 ? ", " : ""}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-3 justify-end">
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    setSwapModal({
+                      isOpen: false,
+                      orderId: "",
+                      orderItems: [],
+                      suggestions: [],
+                      selectedOrderId: "",
+                    })
+                  }
+                >
+                  Annuler
+                </Button>
+                <Button
+                  onClick={confirmSwap}
+                  disabled={swapModal.suggestions.length === 0 || !swapModal.selectedOrderId}
+                >
+                  Confirmer l'échange
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Archive modal */}
       {deleteModal.isOpen && (
         <Dialog
           open={deleteModal.isOpen}

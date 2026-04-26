@@ -31,13 +31,15 @@ export default function OverviewTab() {
       const currentYear = now.getFullYear()
 
       // Fetch all data
-      const [productsRes, customersRes, ordersRes] = await Promise.all([
+      const [productsRes, customersRes, ordersRes, businessOrdersRes] = await Promise.all([
         supabase.from("products").select("*"),
         supabase.from("customers").select("*"),
         supabase.from("customer_orders").select("*"),
+        supabase.from("professionnels_orders").select("*"),
       ])
 
       console.log("[v0] Orders response:", ordersRes.data)
+      console.log("[v0] Business orders response:", businessOrdersRes.data)
       console.log("[v0] Products response:", productsRes.data)
       console.log("[v0] Current month/year:", currentMonth, currentYear)
 
@@ -105,10 +107,55 @@ export default function OverviewTab() {
                 monthlyProfit += itemProfit
               }
             })
+
+            if (order.is_swapped) {
+              console.log("[v0] Swapped order penalty:", order.order_reference)
+              monthlyRevenue -= 100
+              monthlyProfit -= 100
+            }
           } else if (order.status === "en attente" && !order.is_archived) {
             console.log("[v0] Pending order:", order.order_reference)
             pendingOrders++
+          } else if (order.is_archived) {
+            console.log("[v0] Archived order penalty:", order.order_reference)
+            monthlyRevenue -= 200
+            monthlyProfit -= 200
           }
+        }
+      })
+
+      // Process business/professional orders
+      const businessOrdersData = businessOrdersRes.data || []
+      businessOrdersData.forEach((order: any) => {
+        const orderDate = new Date(order.order_date)
+        const orderMonth = orderDate.getMonth() + 1
+        const orderYear = orderDate.getFullYear()
+
+        if (orderMonth === currentMonth && orderYear === currentYear && !order.is_archived) {
+          console.log("[v0] Business order CA:", order.total_amount, "Ref:", order.order_reference)
+          monthlyRevenue += order.total_amount || 0
+
+          const items = order.order_items || []
+          items.forEach((item: any) => {
+            const product = productsMap.get(item.product_id)
+            if (product) {
+              const profitPerUnit = item.price - product.production_cost
+              const itemProfit = profitPerUnit * (item.quantity || 1)
+              console.log(
+                "[v0] Business profit - Item price:",
+                item.price,
+                "Production:",
+                product.production_cost,
+                "Profit per unit:",
+                profitPerUnit,
+                "Quantity:",
+                item.quantity,
+                "Item profit:",
+                itemProfit,
+              )
+              monthlyProfit += itemProfit
+            }
+          })
         }
       })
 

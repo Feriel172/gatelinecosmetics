@@ -30,8 +30,22 @@ interface SupplierOrder {
   deletion_reason?: string
 }
 
+interface RawMaterial {
+  id: string
+  name: string
+}
+
+interface OrderItem {
+  raw_material_id: string
+  raw_material_name: string
+  quantity: number
+  price: number
+  unit_of_measurement: string
+}
+
 export default function SupplierOrdersTab() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>([])
   const [orders, setOrders] = useState<SupplierOrder[]>([])
   const [filteredOrders, setFilteredOrders] = useState<SupplierOrder[]>([])
   const [searchTerm, setSearchTerm] = useState("")
@@ -48,6 +62,7 @@ export default function SupplierOrdersTab() {
     order_date: "",
     comment: "",
     total_amount: "",
+    order_items: [] as OrderItem[],
   })
   const [isEditing, setIsEditing] = useState(false)
   const [editingOrder, setEditingOrder] = useState<SupplierOrder | null>(null)
@@ -61,8 +76,7 @@ export default function SupplierOrdersTab() {
   useEffect(() => {
     const filtered = orders.filter(
       (order) =>
-        order.order_date.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        order.status.toLowerCase().includes(searchTerm.toLowerCase()),
+        order.order_date.toLowerCase().includes(searchTerm.toLowerCase()),
     )
     setFilteredOrders(filtered)
   }, [searchTerm, orders])
@@ -70,12 +84,14 @@ export default function SupplierOrdersTab() {
   const fetchData = async () => {
     try {
       setIsLoading(true)
-      const [suppliersRes, ordersRes] = await Promise.all([
+      const [suppliersRes, rawMaterialsRes, ordersRes] = await Promise.all([
         supabase.from("suppliers").select("*").order("name"),
+        supabase.from("raw_materials").select("*").order("name"),
         supabase.from("supplier_orders").select("*").order("order_date", { ascending: false }),
       ])
 
       setSuppliers(suppliersRes.data || [])
+      setRawMaterials(rawMaterialsRes.data || [])
       setOrders(ordersRes.data || [])
       setFilteredOrders(ordersRes.data || [])
     } catch (error) {
@@ -93,6 +109,7 @@ export default function SupplierOrdersTab() {
       order_date: order.order_date,
       comment: order.comment || "",
       total_amount: order.total_amount.toString(),
+      order_items: order.order_items || [],
     })
     setIsEditing(true)
     setEditingOrder(order)
@@ -120,6 +137,7 @@ export default function SupplierOrdersTab() {
             order_date: formData.order_date,
             total_amount: total,
             comment: formData.comment || null,
+            order_items: formData.order_items,
           })
           .eq("id", editingOrder.id)
 
@@ -128,7 +146,7 @@ export default function SupplierOrdersTab() {
         const { error } = await supabase.from("supplier_orders").insert({
           supplier_id: formData.supplier_id,
           order_date: formData.order_date || new Date().toISOString().split('T')[0],
-          order_items: [],
+          order_items: formData.order_items,
           total_amount: total,
           comment: formData.comment || null,
         })
@@ -136,7 +154,7 @@ export default function SupplierOrdersTab() {
         if (error) throw error
       }
 
-      setFormData({ supplier_id: "", order_date: "", comment: "", total_amount: "" })
+      setFormData({ supplier_id: "", order_date: "", comment: "", total_amount: "", order_items: [] })
       setIsEditing(false)
       setEditingOrder(null)
       setIsOpen(false)
@@ -153,7 +171,7 @@ export default function SupplierOrdersTab() {
 
   const confirmArchive = async () => {
     if (!deleteModal.reason.trim()) {
-      alert("Veuillez fournir une raison pour l'archivage")
+      alert("Veuillez fournir une raison pour l'annulation")
       return
     }
 
@@ -167,7 +185,7 @@ export default function SupplierOrdersTab() {
       setDeleteModal({ isOpen: false, orderId: "", reason: "" })
       await fetchData()
     } catch (error) {
-      console.error("Error archiving order:", error)
+      console.error("Error cancelling order:", error)
     }
   }
 
@@ -204,7 +222,7 @@ export default function SupplierOrdersTab() {
             if (!open) {
               setIsEditing(false)
               setEditingOrder(null)
-              setFormData({ supplier_id: "", order_date: "", comment: "", total_amount: "" })
+              setFormData({ supplier_id: "", order_date: "", comment: "", total_amount: "", order_items: [] })
             }
             setIsOpen(open)
           }}>
@@ -214,7 +232,7 @@ export default function SupplierOrdersTab() {
                 Nouvelle Commande
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>{isEditing ? "Modifier la Commande Fournisseur" : "Créer une Commande Fournisseur"}</DialogTitle>
               </DialogHeader>
@@ -261,6 +279,127 @@ export default function SupplierOrdersTab() {
                 </div>
 
                 <div>
+                  <Label>Articles de la Commande</Label>
+                  <div className="space-y-3">
+                    {(formData.order_items || []).map((item, index) => (
+                      <div key={index} className="flex gap-3 items-end">
+                        <div className="flex-1">
+                          <Label htmlFor={`raw-material-${index}`}>Matière Première</Label>
+                          <Select
+                            value={item.raw_material_id}
+                            onValueChange={(value) => {
+                              const selectedRawMaterial = rawMaterials.find(rm => rm.id === value)
+                              const updatedItems = [...formData.order_items]
+                              updatedItems[index] = {
+                                ...updatedItems[index],
+                                raw_material_id: value,
+                                raw_material_name: selectedRawMaterial?.name || ""
+                              }
+                              setFormData({ ...formData, order_items: updatedItems })
+                            }}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Sélectionner une matière première..." />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {rawMaterials.map((rawMaterial) => (
+                                <SelectItem key={rawMaterial.id} value={rawMaterial.id}>
+                                  {rawMaterial.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="w-24">
+                          <Label htmlFor={`quantity-${index}`}>Quantité</Label>
+                          <Input
+                            id={`quantity-${index}`}
+                            type="number"
+                            min="1"
+                            value={item.quantity}
+                            onChange={(e) => {
+                              const updatedItems = [...formData.order_items]
+                              updatedItems[index] = {
+                                ...updatedItems[index],
+                                quantity: parseInt(e.target.value) || 0
+                              }
+                              setFormData({ ...formData, order_items: updatedItems })
+                            }}
+                          />
+                        </div>
+                        <div className="w-32">
+                          <Label htmlFor={`unit-${index}`}>Unité</Label>
+                          <Input
+                            id={`unit-${index}`}
+                            value={item.unit_of_measurement}
+                            onChange={(e) => {
+                              const updatedItems = [...formData.order_items]
+                              updatedItems[index] = {
+                                ...updatedItems[index],
+                                unit_of_measurement: e.target.value
+                              }
+                              setFormData({ ...formData, order_items: updatedItems })
+                            }}
+                            placeholder="ex: pièces, kg..."
+                          />
+                        </div>
+                        <div className="w-32">
+                          <Label htmlFor={`price-${index}`}>Prix</Label>
+                          <Input
+                            id={`price-${index}`}
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={item.price}
+                            onChange={(e) => {
+                              const updatedItems = [...formData.order_items]
+                              updatedItems[index] = {
+                                ...updatedItems[index],
+                                price: parseFloat(e.target.value) || 0
+                              }
+                              setFormData({ ...formData, order_items: updatedItems })
+                            }}
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            const updatedItems = formData.order_items.filter((_, i) => i !== index)
+                            setFormData({ ...formData, order_items: updatedItems })
+                          }}
+                        >
+                          Supprimer
+                        </Button>
+                      </div>
+                    ))}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        setFormData({
+                          ...formData,
+                          order_items: [
+                            ...formData.order_items,
+                            {
+                              raw_material_id: "",
+                              raw_material_name: "",
+                              quantity: 1,
+                              price: 0,
+                              unit_of_measurement: ""
+                            }
+                          ]
+                        })
+                      }}
+                    >
+                      <Plus className="h-4 w-4 mr-2" />
+                      Ajouter un Article
+                    </Button>
+                  </div>
+                </div>
+
+                <div>
                   <Label htmlFor="total_amount">Montant Total</Label>
                   <Input
                     id="total_amount"
@@ -288,7 +427,7 @@ export default function SupplierOrdersTab() {
       <Tabs defaultValue="active" className="w-full">
         <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="active">Commandes ({activeOrders.length})</TabsTrigger>
-          <TabsTrigger value="archived">Archivées ({archivedOrders.length})</TabsTrigger>
+          <TabsTrigger value="archived">Annulées ({archivedOrders.length})</TabsTrigger>
           <TabsTrigger value="statistics">Statistiques</TabsTrigger>
         </TabsList>
 
@@ -402,7 +541,7 @@ export default function SupplierOrdersTab() {
                         <ul className="space-y-1 text-xs">
                           {order.order_items.map((item: any, idx: number) => (
                             <li key={idx}>
-                              {item.product_name}: {item.quantity} {item.unit_of_measurement} -{" "}
+                              {item.raw_material_name}: {item.quantity} {item.unit_of_measurement} -{" "}
                               {formatCurrency(Number.parseFloat(item.price))}
                             </li>
                           ))}

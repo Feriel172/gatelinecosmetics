@@ -35,10 +35,37 @@ interface Customer {
   }
 }
 
+interface RawMaterial {
+  id: string
+  name: string
+  description?: string
+  created_at: string
+  associatedProducts?: Product[]
+}
+
+interface Professionnel {
+  id: string
+  name: string
+  address: string
+  city: string
+  phone: string
+  type: 'cosmetics' | 'pharmacies'
+  created_at: string
+}
+
+interface Product {
+  id: string
+  name: string
+  recipe?: string
+  created_at: string
+}
+
 export default function SettingsTab() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
   const [professionnels, setProfessionnels] = useState<Professionnel[]>([])
+  const [products, setProducts] = useState<Product[]>([])
+  const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>([])
   const [searchTerm, setSearchTerm] = useState("")
   const [searchTermProfessionnels, setSearchTermProfessionnels] = useState("")
   const [typeFilter, setTypeFilter] = useState<'all' | 'cosmetics' | 'pharmacies'>('all')
@@ -46,9 +73,11 @@ export default function SettingsTab() {
   const [isSuppliersOpen, setIsSuppliersOpen] = useState(false)
   const [isCustomersOpen, setIsCustomersOpen] = useState(false)
   const [isProfessionnelsOpen, setIsProfessionnelsOpen] = useState(false)
+  const [isProductsOpen, setIsProductsOpen] = useState(false)
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null)
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null)
   const [editingProfessionnel, setEditingProfessionnel] = useState<Professionnel | null>(null)
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null)
   const [supplierForm, setSupplierForm] = useState({
     name: "",
     contact_email: "",
@@ -68,6 +97,11 @@ export default function SettingsTab() {
     phone: "",
     type: "cosmetics" as 'cosmetics' | 'pharmacies',
   })
+  const [productForm, setProductForm] = useState({
+    name: "",
+    description: "",
+    selectedProducts: [] as string[],
+  })
 
   const supabase = getSupabaseClient()
 
@@ -78,15 +112,31 @@ export default function SettingsTab() {
   const fetchData = async () => {
     try {
       setIsLoading(true)
-      const [suppliersRes, customersRes, professionnelsRes, ordersRes] = await Promise.all([
+      const [suppliersRes, customersRes, professionnelsRes, productsRes, rawMaterialsRes, productRawMaterialsRes, ordersRes] = await Promise.all([
         supabase.from("suppliers").select("*").order("name"),
         supabase.from("customers").select("*").order("created_at", { ascending: false }),
         supabase.from("professionnels").select("*").order("created_at", { ascending: false }),
+        supabase.from("products").select("*").order("name"),
+        supabase.from("raw_materials").select("*").order("name"),
+        supabase.from("product_raw_materials").select("product_id, raw_material_id, products(id, name)"),
         supabase.from("customer_orders").select("customer_id, status, is_archived"),
       ])
 
       setSuppliers(suppliersRes.data || [])
       setProfessionnels(professionnelsRes.data || [])
+      setProducts(productsRes.data || [])
+
+      // Process raw materials with associated products
+      const rawMaterialsWithProducts = (rawMaterialsRes.data || []).map((rawMaterial: any) => {
+        const associatedProducts = (productRawMaterialsRes.data || [])
+          .filter((prm: any) => prm.raw_material_id === rawMaterial.id)
+          .map((prm: any) => prm.products)
+        return {
+          ...rawMaterial,
+          associatedProducts,
+        }
+      })
+      setRawMaterials(rawMaterialsWithProducts)
 
       // Process customers with order statistics
       const customersWithStats = (customersRes.data || []).map((customer: any) => {
@@ -338,6 +388,111 @@ export default function SettingsTab() {
     }
   }
 
+  const handleSaveProduct = async (e: React.FormEvent) => {
+    e.preventDefault()
+
+    if (!productForm.name.trim()) {
+      alert("Veuillez entrer le nom de la matière première")
+      return
+    }
+
+    try {
+      let rawMaterialId: string
+
+      if (editingProduct) {
+        const { error } = await supabase
+          .from("raw_materials")
+          .update({
+            name: productForm.name,
+            description: productForm.description || null,
+          })
+          .eq("id", editingProduct.id)
+
+        if (error) throw error
+        rawMaterialId = editingProduct.id
+
+        // Delete existing associations
+        await supabase
+          .from("product_raw_materials")
+          .delete()
+          .eq("raw_material_id", rawMaterialId)
+      } else {
+        const { data, error } = await supabase.from("raw_materials").insert({
+          name: productForm.name,
+          description: productForm.description || null,
+        } as any).select().single()
+
+        if (error) throw error
+        rawMaterialId = data.id
+      }
+
+      // Insert new associations
+      if (productForm.selectedProducts.length > 0) {
+        const associations = productForm.selectedProducts.map(productId => ({
+          product_id: productId,
+          raw_material_id: rawMaterialId,
+        }))
+
+        const { error: assocError } = await supabase
+          .from("product_raw_materials")
+          .insert(associations)
+
+        if (assocError) throw assocError
+      }
+
+      setProductForm({ name: "", description: "", selectedProducts: [] })
+      setEditingProduct(null)
+      setIsProductsOpen(false)
+      await fetchData()
+    } catch (error) {
+      console.error("Error saving raw material:", error)
+      alert("Impossible d'enregistrer la matière première")
+    }
+  }
+
+  const handleEditProduct = (product: Product) => {
+    setEditingProduct(product)
+    setProductForm({
+      name: product.name,
+      description: product.description || "",
+    })
+    setIsProductsOpen(true)
+  }
+
+  const handleDeleteProduct = async (id: string) => {
+    if (!confirm("Êtes-vous sûr de vouloir supprimer ce produit ?")) return
+
+    try {
+      const { error } = await supabase.from("products").delete().eq("id", id)
+      if (error) throw error
+      await fetchData()
+    } catch (error) {
+      console.error("Error deleting product:", error)
+    }
+  }
+
+  const handleEditRawMaterial = (rawMaterial: RawMaterial) => {
+    setEditingProduct(rawMaterial)
+    setProductForm({
+      name: rawMaterial.name,
+      description: rawMaterial.description || "",
+      selectedProducts: rawMaterial.associatedProducts?.map(p => p.id) || [],
+    })
+    setIsProductsOpen(true)
+  }
+
+  const handleDeleteRawMaterial = async (id: string) => {
+    if (!confirm("Êtes-vous sûr de vouloir supprimer cette matière première ?")) return
+
+    try {
+      const { error } = await supabase.from("raw_materials").delete().eq("id", id)
+      if (error) throw error
+      await fetchData()
+    } catch (error) {
+      console.error("Error deleting raw material:", error)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2 mb-6">
@@ -346,10 +501,11 @@ export default function SettingsTab() {
       </div>
 
       <Tabs defaultValue="suppliers" className="w-full">
-        <TabsList className="grid w-full grid-cols-3">
+        <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="suppliers">Fournisseurs ({suppliers.length})</TabsTrigger>
           <TabsTrigger value="customers">Clients ({customers.length})</TabsTrigger>
           <TabsTrigger value="professionnels">Professionnels ({professionnels.length})</TabsTrigger>
+          <TabsTrigger value="stock">Stock ({rawMaterials.length})</TabsTrigger>
         </TabsList>
 
         {/* Suppliers Tab */}
@@ -843,6 +999,144 @@ export default function SettingsTab() {
               </div>
             )}
           </div>
+        </TabsContent>
+
+        {/* Stock Tab */}
+        <TabsContent value="stock" className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold">Gestion du Stock</h3>
+            <Dialog
+              open={isProductsOpen}
+              onOpenChange={(open) => {
+                setIsProductsOpen(open)
+                if (!open) {
+                  setEditingProduct(null)
+                  setProductForm({ name: "", description: "", selectedProducts: [] })
+                }
+              }}
+            >
+              <DialogTrigger asChild>
+                <Button className="flex items-center gap-2">
+                  <Plus className="h-4 w-4" />
+                  Ajouter Matière Première
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>{editingProduct ? "Modifier Matière Première" : "Ajouter une Nouvelle Matière Première"}</DialogTitle>
+                </DialogHeader>
+                <form onSubmit={handleSaveProduct} className="space-y-4">
+                  <div>
+                    <Label htmlFor="product_name">Nom de la Matière Première *</Label>
+                    <Input
+                      id="product_name"
+                      value={productForm.name}
+                      onChange={(e) => setProductForm({ ...productForm, name: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="product_description">Description (Optionnel)</Label>
+                    <Input
+                      id="product_description"
+                      value={productForm.description}
+                      onChange={(e) => setProductForm({ ...productForm, description: e.target.value })}
+                      placeholder="Description de la matière première..."
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="product_associations">Produits associés (Optionnel)</Label>
+                    <div className="max-h-32 overflow-y-auto border rounded-md p-2">
+                      {products.map((product) => (
+                        <label key={product.id} className="flex items-center space-x-2">
+                          <input
+                            type="checkbox"
+                            checked={productForm.selectedProducts.includes(product.id)}
+                            onChange={(e) => {
+                              const selected = productForm.selectedProducts
+                              if (e.target.checked) {
+                                setProductForm({
+                                  ...productForm,
+                                  selectedProducts: [...selected, product.id]
+                                })
+                              } else {
+                                setProductForm({
+                                  ...productForm,
+                                  selectedProducts: selected.filter(id => id !== product.id)
+                                })
+                              }
+                            }}
+                          />
+                          <span className="text-sm">{product.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Sélectionnez les produits qui utilisent cette matière première
+                    </p>
+                  </div>
+                  <div className="flex gap-3 justify-end">
+                    <Button type="button" variant="outline" onClick={() => setIsProductsOpen(false)}>
+                      Annuler
+                    </Button>
+                    <Button type="submit">{editingProduct ? "Modifier" : "Ajouter"}</Button>
+                  </div>
+                </form>
+              </DialogContent>
+            </Dialog>
+          </div>
+
+          {isLoading ? (
+            <p className="text-muted-foreground">Chargement des matières premières...</p>
+          ) : rawMaterials.length === 0 ? (
+            <Card>
+              <CardContent className="pt-6 text-center text-muted-foreground">
+                Aucune matière première enregistrée. Commencez par ajouter une matière première.
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2">
+              {rawMaterials.map((rawMaterial) => (
+                <Card key={rawMaterial.id} className="hover:shadow-md transition-shadow">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg">{rawMaterial.name}</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="text-sm space-y-2">
+                      {rawMaterial.description && (
+                        <div>
+                          <p className="text-muted-foreground text-xs">Description</p>
+                          <p>{rawMaterial.description}</p>
+                        </div>
+                      )}
+                      <div>
+                        <p className="text-muted-foreground text-xs">Ajouté le</p>
+                        <p>{new Date(rawMaterial.created_at).toLocaleDateString("fr-FR")}</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleEditRawMaterial(rawMaterial)}
+                        className="flex-1"
+                      >
+                        Modifier
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDeleteRawMaterial(rawMaterial.id)}
+                        className="text-destructive hover:text-destructive"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
         </TabsContent>
       </Tabs>
     </div>

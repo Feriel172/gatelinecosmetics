@@ -261,7 +261,7 @@ export default function BusinessOrdersTab() {
 
   const confirmArchive = async () => {
     if (!deleteModal.reason.trim()) {
-      alert("Veuillez fournir une raison pour l'archivage")
+      alert("Veuillez fournir une raison pour l'annulation")
       return
     }
 
@@ -275,7 +275,7 @@ export default function BusinessOrdersTab() {
       setDeleteModal({ isOpen: false, orderId: "", reason: "" })
       await fetchData()
     } catch (error) {
-      console.error("Error archiving order:", error)
+              console.error("Error cancelling order:", error)
     }
   }
 
@@ -486,7 +486,7 @@ export default function BusinessOrdersTab() {
       <Tabs defaultValue="active" className="w-full">
         <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="active">Commandes ({activeOrders.length})</TabsTrigger>
-          <TabsTrigger value="archived">Archivées ({archivedOrders.length})</TabsTrigger>
+          <TabsTrigger value="archived">Annulées ({archivedOrders.length})</TabsTrigger>
           <TabsTrigger value="statistics">Statistiques</TabsTrigger>
         </TabsList>
 
@@ -588,7 +588,7 @@ export default function BusinessOrdersTab() {
         <TabsContent value="archived" className="space-y-4">
           {archivedOrders.length === 0 ? (
             <Card>
-              <CardContent className="pt-6 text-center text-muted-foreground">Aucune commande archivée</CardContent>
+              <CardContent className="pt-6 text-center text-muted-foreground">Aucune commande annulée</CardContent>
             </Card>
           ) : (
             <div className="space-y-4">
@@ -610,7 +610,7 @@ export default function BusinessOrdersTab() {
                   </CardHeader>
                   <CardContent className="space-y-3">
                     <div className="bg-destructive/10 p-2 rounded text-sm">
-                      <p className="text-destructive text-xs font-semibold mb-1">Raison d'archivage:</p>
+                      <p className="text-destructive text-xs font-semibold mb-1">Raison d'annulation:</p>
                       <p className="text-xs">{order.deletion_reason}</p>
                     </div>
                     <div className="border-t border-border pt-3">
@@ -679,16 +679,16 @@ export default function BusinessOrdersTab() {
         >
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Archiver la Commande</DialogTitle>
+              <DialogTitle>Annuler la Commande</DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
               <div>
-                <Label htmlFor="reason">Raison de l'archivage (obligatoire)</Label>
+                <Label htmlFor="reason">Raison de l'annulation (obligatoire)</Label>
                 <Textarea
                   id="reason"
                   value={deleteModal.reason}
                   onChange={(e) => setDeleteModal({ ...deleteModal, reason: e.target.value })}
-                  placeholder="Expliquez pourquoi vous archivez cette commande..."
+                  placeholder="Expliquez pourquoi vous annulez cette commande..."
                   rows={3}
                 />
               </div>
@@ -697,7 +697,7 @@ export default function BusinessOrdersTab() {
                   Annuler
                 </Button>
                 <Button variant="destructive" onClick={confirmArchive}>
-                  Archiver
+                  Annuler la commande
                 </Button>
               </div>
             </div>

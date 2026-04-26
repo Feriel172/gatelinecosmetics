@@ -552,6 +552,7 @@ export default function CustomerOrdersTab() {
     }).format(amount)
   }
 
+  
   const activeOrders = filteredOrders.filter((o) => !o.is_archived)
   const archivedOrders = filteredOrders.filter((o) => o.is_archived && !o.is_swapped)
   const filteredArchivedOrders = archivedOrders.filter(

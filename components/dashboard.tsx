@@ -9,7 +9,8 @@ import BusinessOrdersTab from "./tabs/business-orders-tab"
 import SettingsTab from "./tabs/settings-tab"
 import OverviewTab from "./tabs/overview-tab"
 import AdvertisingTab from "./tabs/advertising-tab"
-import { LogOut, Settings, Megaphone } from "lucide-react"
+import StockTab from "./tabs/stock-tab"
+import { LogOut, Settings, Megaphone, Package } from "lucide-react"
 import { getSupabaseClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 
@@ -77,7 +78,7 @@ export default function Dashboard() {
           >
             Commandes Business
           </Button>
-          <Button
+<Button
             variant={activeTab === "advertising" ? "default" : "outline"}
             onClick={() => setActiveTab("advertising")}
             size="sm"
@@ -85,6 +86,15 @@ export default function Dashboard() {
           >
             <Megaphone className="h-4 w-4" />
             Publicités
+          </Button>
+          <Button
+            variant={activeTab === "stock" ? "default" : "outline"}
+            onClick={() => setActiveTab("stock")}
+            size="sm"
+            className="flex items-center gap-2"
+          >
+            <Package className="h-4 w-4" />
+            Stock
           </Button>
           <Button
             variant={activeTab === "settings" ? "default" : "outline"}
@@ -105,7 +115,8 @@ export default function Dashboard() {
         {activeTab === "supplier-orders" && <SupplierOrdersTab />}
         {activeTab === "customer-orders" && <CustomerOrdersTab />}
         {activeTab === "business-orders" && <BusinessOrdersTab />}
-        {activeTab === "advertising" && <AdvertisingTab />}
+{activeTab === "advertising" && <AdvertisingTab />}
+        {activeTab === "stock" && <StockTab />}
         {activeTab === "settings" && <SettingsTab />}
       </main>
     </div>

@@ -21,6 +21,9 @@ interface Product {
   selling_price: number
   is_archived: boolean
   deletion_reason?: string
+  flacon?: boolean
+  masque?: boolean
+  etiquette?: boolean
 }
 
 interface IngredientRow {
@@ -42,11 +45,14 @@ export default function ProductsTab() {
     productId: "",
     reason: "",
   })
-  const [formData, setFormData] = useState({
+const [formData, setFormData] = useState({
     name: "",
     price_details: "",
     production_cost: "",
     selling_price: "",
+    flacon: false,
+    masque: false,
+    etiquette: false,
   })
 
   const supabase = getSupabaseClient()
@@ -80,7 +86,7 @@ export default function ProductsTab() {
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
-      if (editingId) {
+if (editingId) {
         const { error } = await supabase
           .from("products")
           .update({
@@ -88,6 +94,9 @@ export default function ProductsTab() {
             price_details: formData.price_details,
             production_cost: Number.parseFloat(formData.production_cost) || 0,
             selling_price: Number.parseFloat(formData.selling_price) || 0,
+            flacon: formData.flacon,
+            masque: formData.masque,
+            etiquette: formData.etiquette,
           })
           .eq("id", editingId)
 
@@ -98,12 +107,15 @@ export default function ProductsTab() {
           price_details: formData.price_details,
           production_cost: Number.parseFloat(formData.production_cost) || 0,
           selling_price: Number.parseFloat(formData.selling_price) || 0,
+          flacon: formData.flacon,
+          masque: formData.masque,
+          etiquette: formData.etiquette,
         })
 
         if (error) throw error
       }
 
-      setFormData({ name: "", price_details: "", production_cost: "", selling_price: "" })
+setFormData({ name: "", price_details: "", production_cost: "", selling_price: "", flacon: false, masque: false, etiquette: false })
       setEditingId(null)
       setIsOpen(false)
 
@@ -114,12 +126,15 @@ export default function ProductsTab() {
     }
   }
 
-  const handleEditProduct = (product: Product) => {
+const handleEditProduct = (product: Product) => {
     setFormData({
       name: product.name,
       price_details: product.price_details || "",
       production_cost: product.production_cost.toString(),
       selling_price: product.selling_price.toString(),
+      flacon: product.flacon || false,
+      masque: product.masque || false,
+      etiquette: product.etiquette || false,
     })
     setEditingId(product.id)
     setIsOpen(true)
@@ -212,7 +227,7 @@ export default function ProductsTab() {
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+<div className="grid grid-cols-2 gap-4">
                   <div>
                     <Label htmlFor="production_cost">Coût de Production (DZD)</Label>
                     <Input
@@ -234,6 +249,40 @@ export default function ProductsTab() {
                       onChange={(e) => setFormData({ ...formData, selling_price: e.target.value })}
                       placeholder="0.00"
                     />
+                  </div>
+                </div>
+
+                {/* Packaging options */}
+                <div className="border-t border-border pt-4 mt-4">
+                  <p className="text-sm font-medium mb-3">Emballage requis</p>
+                  <div className="grid grid-cols-3 gap-4">
+                    <label className="flex items-center space-x-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formData.flacon}
+                        onChange={(e) => setFormData({ ...formData, flacon: e.target.checked })}
+                        className="w-4 h-4"
+                      />
+                      <span className="text-sm">Flacon</span>
+                    </label>
+                    <label className="flex items-center space-x-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formData.masque}
+                        onChange={(e) => setFormData({ ...formData, masque: e.target.checked })}
+                        className="w-4 h-4"
+                      />
+                      <span className="text-sm">Masque</span>
+                    </label>
+                    <label className="flex items-center space-x-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formData.etiquette}
+                        onChange={(e) => setFormData({ ...formData, etiquette: e.target.checked })}
+                        className="w-4 h-4"
+                      />
+                      <span className="text-sm">Étiquette</span>
+                    </label>
                   </div>
                 </div>
               </div>
@@ -300,12 +349,31 @@ export default function ProductsTab() {
                       <p className="text-muted-foreground">Prix de Vente</p>
                       <p className="font-semibold text-primary">{formatCurrency(product.selling_price)}</p>
                     </div>
-                    {product.price_details && (
+{product.price_details && (
                       <div className="text-sm border-t border-border pt-3">
                         <p className="text-muted-foreground mb-2">Détails des Prix</p>
                         <p className="text-sm">{product.price_details}</p>
                       </div>
                     )}
+
+                    {/* Display packaging requirements */}
+                    {(product.flacon || product.masque || product.etiquette) && (
+                      <div className="text-sm border-t border-border pt-3">
+                        <p className="text-muted-foreground mb-2">Emballage requis</p>
+                        <div className="flex flex-wrap gap-2">
+                          {product.flacon && (
+                            <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded">Flacon</span>
+                          )}
+                          {product.masque && (
+                            <span className="px-2 py-1 bg-purple-100 text-purple-800 text-xs rounded">Masque</span>
+                          )}
+                          {product.etiquette && (
+                            <span className="px-2 py-1 bg-green-100 text-green-800 text-xs rounded">Étiquette</span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
                     <div className="flex gap-2 mt-3 pt-3 border-t border-border">
                       <Button variant="ghost" size="sm" onClick={() => handleEditProduct(product)} className="flex-1">
                         <Edit className="h-4 w-4 mr-2" />

@@ -322,7 +322,7 @@ export default function CustomerOrdersTab() {
   }
 
   
-  const confirmStatusChange = async (newStatus: string) => {
+const confirmStatusChange = async (newStatus: string) => {
     try {
       const { error } = await supabase
         .from("customer_orders")
@@ -330,6 +330,34 @@ export default function CustomerOrdersTab() {
         .eq("id", statusModal.orderId)
 
       if (error) throw error
+
+      // If order is confirmed, update stock quantities
+      if (newStatus === "confirmée") {
+        const order = orders.find((o) => o.id === statusModal.orderId)
+        if (order && order.order_items) {
+          for (const item of order.order_items) {
+            // Get all raw materials for this product
+            const { data: productRawMaterials } = await supabase
+              .from("product_raw_materials")
+              .select("id, quantity")
+              .eq("product_id", item.product_id)
+
+            if (productRawMaterials) {
+              for (const prm of productRawMaterials) {
+                const newQuantity = Math.max(0, (prm.quantity || 0) - parseFloat(item.quantity))
+                const newStatus = newQuantity < 20 ? "out_of_stock" : newQuantity <= 50 ? "low_stock" : "in_stock"
+
+                await supabase
+                  .from("product_raw_materials")
+                  .update({ quantity: newQuantity, status: newStatus })
+                  .eq("id", prm.id)
+              }
+            }
+          }
+          console.log("[Stock] Stock updated for confirmed order:", order.order_reference)
+        }
+      }
+
       setStatusModal({ isOpen: false, orderId: "", comment: "" })
       await fetchData()
     } catch (error) {

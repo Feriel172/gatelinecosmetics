@@ -1,21 +1,24 @@
-# TODO: Completed - Stock & Packaging Features
+- [ ] Create DB table `monthly_financials` to store locked monthly aggregates:
+  - customer_orders revenue & profit
+  - professionnels_orders revenue & profit
+  - total revenue & profit
+  - key by month (YYYY-MM)
+  - include a `period_locked_at` (timestamp) and `version`/`status` if useful
+- [ ] Add a server-side helper (DB trigger or RPC) to upsert/lock monthly totals for a given month
+  - Inputs: order type, order_date, status, order_items, totals/subtotal/delivery_cost
+  - Uses current products.production_cost at time of update
+- [ ] Update CustomerOrdersTab:
+  - When an order becomes `confirmée` (confirmStatusChange), recompute contribution for its month and update `monthly_financials`
+  - When an order is edited while still pending, do not update aggregates until confirmed
+  - When an archived flag changes, decide whether to keep totals locked for past months
+- [ ] Update BusinessOrdersTab:
+  - When creating/updating a business order, update aggregates only if business order counts as confirmed (currently UI treats all non-archived business orders as included)
+- [ ] Update OverviewTab + statistics sections:
+  - Fetch monthly totals from `monthly_financials` instead of recomputing from live products
+  - Remove profit calculations based on `products.production_cost`
+- [ ] Backfill existing months
+  - One-time script to compute historical `monthly_financials` for all months present in orders
+- [ ] Verify with test scenario
+  - Change product.production_cost today
+  - Ensure profits for previous months remain unchanged, while current month updates only for newly confirmed/updated orders
 
-## Completed Features:
-
-### Stock Section:
-- [x] Stock tab added BEFORE Settings in navigation
-- [x] Table displays: Raw Material | Product | Quantity | Status
-- [x] Product filter dropdown
-- [x] Status colors: Green (In Stock), Yellow (Low Stock), Red (Out of Stock)
-- [x] Add/Edit quantity functionality
-- [x] Summary cards showing stock counts
-- [x] Database columns: quantity & status in product_raw_materials
-
-### Special Raw Materials:
-- [x] Étiquette: automatically assigned to ALL products (every product has a label)
-- [x] Flacon Masque: automatically assigned to mask products
-
-### Scripts:
-- scripts/07_add_stock_quantity.sql: Add quantity & status columns
-- scripts/08_add_product_packaging.sql: Add packaging columns to products (flacon, masque, etiquette)
-- scripts/09_add_special_raw_materials.sql: Auto-assign special raw materials to products

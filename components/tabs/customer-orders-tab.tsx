@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useEffect } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { getSupabaseClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -13,6 +13,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { Plus, Trash2, Copy, Search, Archive, RotateCcw, CheckCircle2, Edit, RefreshCw } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Pie, PieChart } from "recharts"
+import {
+  ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
+  ChartTooltip,
+  ChartTooltipContent,
+} from "@/components/ui/chart"
 
 interface Product {
   id: string
@@ -59,26 +67,44 @@ interface CustomerOrder {
   status_comment?: string
 }
 
+const buildMonthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+
+const todayISO = () => {
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, "0")
+  const day = String(now.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
+}
+
+const isValidDateISO = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value)
+
 export default function CustomerOrdersTab() {
+  const supabase = getSupabaseClient()
+
   const [products, setProducts] = useState<Product[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
   const [deliveryCities, setDeliveryCities] = useState<DeliveryCity[]>([])
+
   const [orders, setOrders] = useState<CustomerOrder[]>([])
   const [filteredOrders, setFilteredOrders] = useState<CustomerOrder[]>([])
+
   const [searchTerm, setSearchTerm] = useState("")
   const [archivedSearchTerm, setArchivedSearchTerm] = useState("")
+
   const [isOpen, setIsOpen] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editingOrder, setEditingOrder] = useState<CustomerOrder | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const [orderItems, setOrderItems] = useState<OrderItem[]>([
-    { product_id: "", product_name: "", quantity: "", price: 0 },
-  ])
+
+  const [orderItems, setOrderItems] = useState<OrderItem[]>([{ product_id: "", product_name: "", quantity: "", price: 0 }])
+
   const [statusModal, setStatusModal] = useState<{ isOpen: boolean; orderId: string; comment: string }>({
     isOpen: false,
     orderId: "",
     comment: "",
   })
+
   const [swapModal, setSwapModal] = useState<{
     isOpen: boolean
     orderId: string
@@ -92,23 +118,27 @@ export default function CustomerOrdersTab() {
     suggestions: [],
     selectedOrderId: "",
   })
+
   const [deleteModal, setDeleteModal] = useState<{ isOpen: boolean; orderId: string; reason: string }>({
     isOpen: false,
     orderId: "",
     reason: "",
   })
+
+  const [selectedStatsMonth, setSelectedStatsMonth] = useState<string>(() => buildMonthKey(new Date()))
+
   const [formData, setFormData] = useState({
     first_name: "",
     last_name: "",
     phone_number: "",
     city: "",
     address: "",
+    order_date: todayISO(),
   })
-
-  const supabase = getSupabaseClient()
 
   useEffect(() => {
     fetchData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -124,7 +154,7 @@ export default function CustomerOrdersTab() {
     try {
       setIsLoading(true)
       const [productsRes, customersRes, ordersRes, citiesRes] = await Promise.all([
-        supabase.from("products").select("id, name, selling_price").order("name"),
+        supabase.from("products").select("id, name, selling_price, production_cost").order("name"),
         supabase.from("customers").select("*").order("first_name"),
         supabase.from("customer_orders").select("*").order("order_date", { ascending: false }),
         supabase.from("delivery_cities").select("*").order("city_name"),
@@ -141,6 +171,7 @@ export default function CustomerOrdersTab() {
           customer_name: customer ? `${customer.first_name} ${customer.last_name}` : "Inconnu",
         }
       })
+
       setOrders(enrichedOrders)
       setFilteredOrders(enrichedOrders)
     } catch (error) {
@@ -150,15 +181,13 @@ export default function CustomerOrdersTab() {
     }
   }
 
-  const generateOrderReference = () => {
-    return `CMD-${Date.now().toString().slice(-9)}`
-  }
+  const generateOrderReference = () => `CMD-${Date.now().toString().slice(-9)}`
 
   const handleAddItem = () => {
     setOrderItems([...orderItems, { product_id: "", product_name: "", quantity: "", price: 0 }])
   }
 
-  const handleItemChange = (index: number, field: string, value: string) => {
+  const handleItemChange = (index: number, field: keyof OrderItem | string, value: string) => {
     const newItems = [...orderItems]
     if (field === "product_id") {
       const product = products.find((p) => p.id === value)
@@ -191,8 +220,203 @@ export default function CustomerOrdersTab() {
     return city?.delivery_cost || 0
   }
 
+  const filterOrdersBySelectedMonth = (list: CustomerOrder[]) => {
+    if (!selectedStatsMonth) return []
+    const [yearStr, monthStr] = selectedStatsMonth.split("-")
+
+    const year = Number.parseInt(yearStr, 10)
+    const month = Number.parseInt(monthStr, 10) - 1
+    const start = new Date(year, month, 1)
+    const end = new Date(year, month + 1, 1)
+
+    return list.filter((o) => {
+      const d = new Date(o.order_date)
+      return !Number.isNaN(d.getTime()) && d >= start && d < end
+    })
+  }
+
+  const activeOrders = useMemo(
+    () => filterOrdersBySelectedMonth(filteredOrders.filter((o) => !o.is_archived)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filteredOrders, selectedStatsMonth],
+  )
+  const archivedOrders = useMemo(
+    () => filterOrdersBySelectedMonth(filteredOrders.filter((o) => o.is_archived && !o.is_swapped)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filteredOrders, selectedStatsMonth],
+  )
+
+  const filteredArchivedOrders = useMemo(() => {
+    return archivedOrders.filter(
+      (order) =>
+        order.customer_name.toLowerCase().includes(archivedSearchTerm.toLowerCase()) ||
+        order.order_reference.toLowerCase().includes(archivedSearchTerm.toLowerCase()) ||
+        (order.deletion_reason && order.deletion_reason.toLowerCase().includes(archivedSearchTerm.toLowerCase())),
+    )
+  }, [archivedOrders, archivedSearchTerm])
+
+  const pendingOrders = useMemo(() => activeOrders.filter((o) => o.status === "en attente"), [activeOrders])
+  const swappedOrders = useMemo(() => filterOrdersBySelectedMonth(orders.filter((o) => o.is_swapped)), [orders, selectedStatsMonth])
+
+  const confirmedOrders = useMemo(() => orders.filter((o) => o.status === "confirmée"), [orders])
+  const archivedOrdersCount = confirmedOrders.filter((o) => o.is_archived).length
+  const swappedOrdersCount = confirmedOrders.filter((o) => o.is_swapped).length
+
+  const monthOptions = useMemo(() => {
+    const set = new Set<string>()
+    orders
+      .filter((o) => o.status === "confirmée" && o.order_date)
+      .forEach((o) => {
+        const d = new Date(o.order_date)
+        if (Number.isNaN(d.getTime())) return
+        set.add(buildMonthKey(d))
+      })
+    set.add(buildMonthKey(new Date()))
+    return Array.from(set).sort((a, b) => b.localeCompare(a))
+  }, [orders])
+
+  const getOrdersForSelectedMonth = (monthKey: string) => {
+    const [yearStr, monthStr] = monthKey.split("-")
+    const year = Number.parseInt(yearStr, 10)
+    const month = Number.parseInt(monthStr, 10) - 1
+    const start = new Date(year, month, 1)
+    const end = new Date(year, month + 1, 1)
+
+    // Important: stats for "Annulées" / "Échangées" must not depend on confirmation status.
+    // Swapped/archived flows can occur before status becomes "confirmée".
+    return orders.filter((o) => {
+      const d = new Date(o.order_date)
+      return !Number.isNaN(d.getTime()) && d >= start && d < end
+    })
+  }
+
+
+  const selectedMonthOrders = useMemo(() => getOrdersForSelectedMonth(selectedStatsMonth), [orders, selectedStatsMonth])
+
+  const confirmedSelectedMonthOrders = selectedMonthOrders.filter((o) => o.status === "confirmée")
+
+  // For the “Annulées / Échangées” counters, the tab already shows archived/swapped regardless of confirmation.
+  // Match that behavior here: only filter by selected month, then apply archived/swapped logic.
+  const currentMonthCanceledCount = selectedMonthOrders.filter((o) => o.is_archived && !o.is_swapped).length
+  const currentMonthSwappedCount = selectedMonthOrders.filter((o) => o.is_swapped).length
+
+  const overviewOrdersCountForSelectedMonth = confirmedSelectedMonthOrders.length
+  const overviewSalesForSelectedMonth = confirmedSelectedMonthOrders.reduce((sum, order) => sum + (order.subtotal || 0), 0) -
+    currentMonthCanceledCount * 200 -
+    currentMonthSwappedCount * 100
+
+
+  const confirmedOrdersForSelectedMonth = useMemo(
+    () => orders.filter((o) => o.status === "confirmée"),
+    [orders],
+  )
+
+  // Profit = sum over confirmed orders in the selected month of:
+  // (product selling price - product manufacturing cost) * quantity
+  
+
+const productsById = useMemo(
+  () =>
+    Object.fromEntries(
+      products.map((p) => [p.id, p])
+    ),
+  [products]
+)
+
+const overviewProfitForSelectedMonth = useMemo(() => {
+  const [yearStr, monthStr] = selectedStatsMonth.split("-")
+
+  const year = parseInt(yearStr, 10)
+  const month = parseInt(monthStr, 10) - 1
+
+  const start = new Date(year, month, 1)
+  const end = new Date(year, month + 1, 1)
+
+  return confirmedOrders.reduce((totalProfit, order) => {
+    const d = new Date(order.order_date)
+
+    if (
+      Number.isNaN(d.getTime()) ||
+      order.status !== "confirmée" ||
+      d < start ||
+      d >= end
+    ) {
+      return totalProfit
+    }
+
+    const orderProfit = (order.order_items ?? []).reduce(
+      (profit, item) => {
+        const product = productsById[item.product_id]
+
+        if (!product) return profit
+
+        return (
+          profit +
+          (Number(product.selling_price) -
+            Number(product.production_cost)) *
+            Number(item.quantity)
+        )
+      },
+      0
+    )
+
+    return totalProfit + orderProfit
+  }, 0)
+}, [confirmedOrders, productsById, selectedStatsMonth])
+
+  const getTopSellingProductsThisMonth = () => {
+    const map = new Map<string, { product_id: string; name: string; units: number }>()
+
+    selectedMonthOrders.forEach((order) => {
+      ;(order.order_items || []).forEach((item) => {
+        const productId = item.product_id
+        if (!productId) return
+
+        const qty = Number.parseFloat(item.quantity) || 0
+        if (qty <= 0) return
+
+        const existing = map.get(productId)
+        if (existing) existing.units += qty
+        else map.set(productId, { product_id: productId, name: item.product_name || "Produit", units: qty })
+      })
+    })
+
+    const productsByUnits = Array.from(map.values()).sort((a, b) => b.units - a.units)
+    const totalUnits = productsByUnits.reduce((sum, p) => sum + p.units, 0)
+
+    if (totalUnits <= 0) {
+      return {
+        topProduct: null as null | { name: string; units: number },
+        pieData: [] as { name: string; units: number; fill: string }[],
+      }
+    }
+
+    const topProduct = productsByUnits[0]
+
+    // Keep every product as a distinct slice with its own deterministic color.
+    // This matches your requirement: "different colors on the pie chart, a color for every product".
+    const palette = [
+      "#3b82f6", "#22c55e", "#f97316", "#a855f7", "#06b6d4", "#e11d48", "#84cc16", "#f59e0b",
+      "#6366f1", "#14b8a6", "#ef4444", "#8b5cf6", "#10b981", "#fb7185", "#60a5fa", "#d946ef",
+    ]
+
+    const pieData = productsByUnits.map((p, idx) => {
+      const fill = palette[idx % palette.length]
+      return { name: p.name, units: p.units, fill }
+    })
+
+    return { topProduct: { name: topProduct.name, units: topProduct.units }, pieData }
+  }
+
+  const { topProduct, pieData } = useMemo(() => getTopSellingProductsThisMonth(), [selectedMonthOrders])
+
   const handleSaveOrder = async (e: React.FormEvent) => {
     e.preventDefault()
+
+    // If the UI hides order_date on create, we still must provide a value for DB.
+    // Use today's date as a fallback.
+    const orderDate = todayISO()
+
 
     if (!formData.first_name || !formData.last_name || !formData.phone_number) {
       alert("Veuillez remplir toutes les informations du client")
@@ -204,6 +428,9 @@ export default function CustomerOrdersTab() {
       return
     }
 
+    // order_date is required by DB, but user feedback requests removing the date field when creating a new customer order
+
+
     if (orderItems.some((item) => !item.product_id || !item.quantity)) {
       alert("Veuillez remplir tous les articles de la commande")
       return
@@ -213,11 +440,10 @@ export default function CustomerOrdersTab() {
       let customerId = ""
 
       if (isEditing && editingOrder) {
-        // When editing, use the existing customer_id and update customer info if changed
         customerId = editingOrder.customer_id
+
         const existingCustomer = customers.find((c) => c.id === customerId)
         if (existingCustomer) {
-          // Update customer info if changed
           if (
             existingCustomer.first_name !== formData.first_name ||
             existingCustomer.last_name !== formData.last_name ||
@@ -236,9 +462,11 @@ export default function CustomerOrdersTab() {
           }
         }
       } else {
-        // When creating new order, find or create customer
         const existingCustomer = customers.find(
-          (c) => c.phone_number === formData.phone_number && c.first_name === formData.first_name && c.last_name === formData.last_name,
+          (c) =>
+            c.phone_number === formData.phone_number &&
+            c.first_name === formData.first_name &&
+            c.last_name === formData.last_name,
         )
 
         if (existingCustomer) {
@@ -263,11 +491,11 @@ export default function CustomerOrdersTab() {
       const total = subtotal + deliveryCost
 
       if (isEditing && editingOrder) {
-        // Update existing order
         const { error } = await supabase
           .from("customer_orders")
           .update({
             customer_id: customerId,
+            order_date: formData.order_date,
             order_items: orderItems.filter((item) => item.product_id),
             subtotal,
             delivery_cost: deliveryCost,
@@ -277,12 +505,13 @@ export default function CustomerOrdersTab() {
           })
           .eq("id", editingOrder.id)
 
+
         if (error) throw error
       } else {
-        // Create new order
         const { error } = await supabase.from("customer_orders").insert({
           customer_id: customerId,
           order_reference: generateOrderReference(),
+          order_date: formData.order_date,
           order_items: orderItems.filter((item) => item.product_id),
           subtotal,
           delivery_cost: deliveryCost,
@@ -301,6 +530,7 @@ export default function CustomerOrdersTab() {
         phone_number: "",
         city: "",
         address: "",
+        order_date: todayISO(),
       })
       setOrderItems([{ product_id: "", product_name: "", quantity: "", price: 0 }])
       setIsOpen(false)
@@ -314,15 +544,12 @@ export default function CustomerOrdersTab() {
   }
 
   const handleChangeStatus = async (orderId: string, newStatus: string) => {
-    if (newStatus === "confirmée") {
-      setStatusModal({ isOpen: true, orderId, comment: "" })
-    } else if (newStatus === "en attente") {
+    if (newStatus === "confirmée" || newStatus === "en attente") {
       setStatusModal({ isOpen: true, orderId, comment: "" })
     }
   }
 
-  
-const confirmStatusChange = async (newStatus: string) => {
+  const confirmStatusChange = async (newStatus: string) => {
     try {
       const { error } = await supabase
         .from("customer_orders")
@@ -331,12 +558,24 @@ const confirmStatusChange = async (newStatus: string) => {
 
       if (error) throw error
 
-      // If order is confirmed, update stock quantities
       if (newStatus === "confirmée") {
         const order = orders.find((o) => o.id === statusModal.orderId)
+
+        // Snapshot monthly totals/profit using DB logic
+        // so historical months are stable when production_cost changes.
+        if (order?.order_date) {
+          const d = new Date(order.order_date)
+          if (!Number.isNaN(d.getTime())) {
+            const monthKey = buildMonthKey(d) // YYYY-MM
+            const { error: finErr } = await supabase.rpc("upsert_monthly_financials", {
+              p_month_key: monthKey,
+            })
+            if (finErr) console.error("Error upserting monthly_financials:", finErr)
+          }
+        }
+
         if (order && order.order_items) {
           for (const item of order.order_items) {
-            // Get all raw materials for this product
             const { data: productRawMaterials } = await supabase
               .from("product_raw_materials")
               .select("id, quantity")
@@ -354,7 +593,6 @@ const confirmStatusChange = async (newStatus: string) => {
               }
             }
           }
-          console.log("[Stock] Stock updated for confirmed order:", order.order_reference)
         }
       }
 
@@ -407,15 +645,12 @@ const confirmStatusChange = async (newStatus: string) => {
     const order = orders.find((o) => o.id === id)
     if (!order || !order.order_items) return
 
-    // Find orders with exactly the same products and quantities
-    // Must be: not archived, status = "en attente", and not the same order
     const suggestions = orders.filter((o) => {
       if (o.id === id) return false
       if (o.is_archived) return false
       if (o.status !== "en attente") return false
       if (!o.order_items || o.order_items.length !== order.order_items.length) return false
 
-      // Check if all items match exactly (same product_id and quantity)
       const sortedA = [...order.order_items].sort((a, b) => a.product_id.localeCompare(b.product_id))
       const sortedB = [...o.order_items].sort((a, b) => a.product_id.localeCompare(b.product_id))
 
@@ -460,13 +695,7 @@ const confirmStatusChange = async (newStatus: string) => {
         swap_date: swapDate,
       })
 
-      console.log("[Swap] Source order ID:", sourceOrder.id)
-      console.log("[Swap] Target order ID:", targetOrder.id)
-      console.log("[Swap] Swap info:", swapInfo)
-      console.log("[Swap] Target info:", targetInfo)
-
-      // Update source order: mark as swapped, archive it (so it goes to swap section)
-      const { data: sourceData, error: sourceError } = await supabase
+      const { error: sourceError } = await supabase
         .from("customer_orders")
         .update({
           is_swapped: true,
@@ -474,36 +703,17 @@ const confirmStatusChange = async (newStatus: string) => {
           status_comment: swapInfo,
         })
         .eq("id", sourceOrder.id)
-        .select()
 
-      if (sourceError) {
-        console.error("[Swap] Source update error:", sourceError)
-        throw new Error(`Source update failed: ${sourceError.message}`)
-      }
-      console.log("[Swap] Source update success:", sourceData)
+      if (sourceError) throw sourceError
 
-      // Update target order: add swap source info but keep it active
-      const { data: targetData, error: targetError } = await supabase
+      const { error: targetError } = await supabase
         .from("customer_orders")
-        .update({
-          status_comment: targetInfo,
-        })
+        .update({ status_comment: targetInfo })
         .eq("id", targetOrder.id)
-        .select()
 
-      if (targetError) {
-        console.error("[Swap] Target update error:", targetError)
-        throw new Error(`Target update failed: ${targetError.message}`)
-      }
-      console.log("[Swap] Target update success:", targetData)
+      if (targetError) throw targetError
 
-      setSwapModal({
-        isOpen: false,
-        orderId: "",
-        orderItems: [],
-        suggestions: [],
-        selectedOrderId: "",
-      })
+      setSwapModal({ isOpen: false, orderId: "", orderItems: [], suggestions: [], selectedOrderId: "" })
       await fetchData()
     } catch (error: any) {
       console.error("[Swap] Error confirming swap:", error)
@@ -512,7 +722,6 @@ const confirmStatusChange = async (newStatus: string) => {
   }
 
   const getSwapSourceInfo = (orderId: string) => {
-    // Find if any swapped order points to this order as the target
     const swappedOrder = orders.find((o) => {
       if (!o.status_comment) return false
       try {
@@ -522,9 +731,10 @@ const confirmStatusChange = async (newStatus: string) => {
         return false
       }
     })
+
     if (!swappedOrder) return null
     try {
-      return JSON.parse(swappedOrder.status_comment)
+      return JSON.parse(swappedOrder.status_comment as string)
     } catch {
       return null
     }
@@ -534,8 +744,7 @@ const confirmStatusChange = async (newStatus: string) => {
     if (!order.status_comment) return null
     try {
       const data = JSON.parse(order.status_comment)
-      if (data.type === "swap_history") return data
-      return null
+      return data.type === "swap_history" ? data : null
     } catch {
       return null
     }
@@ -545,8 +754,7 @@ const confirmStatusChange = async (newStatus: string) => {
     if (!order.status_comment) return null
     try {
       const data = JSON.parse(order.status_comment)
-      if (data.type === "swap_target") return data
-      return null
+      return data.type === "swap_target" ? data : null
     } catch {
       return null
     }
@@ -554,78 +762,36 @@ const confirmStatusChange = async (newStatus: string) => {
 
   const handleEditOrder = (order: CustomerOrder) => {
     const customer = customers.find((c) => c.id === order.customer_id)
-    if (customer) {
-      setFormData({
-        first_name: customer.first_name,
-        last_name: customer.last_name,
-        phone_number: customer.phone_number,
-        city: order.city || "",
-        address: order.address || "",
-      })
-      setOrderItems(order.order_items || [{ product_id: "", product_name: "", quantity: "", price: 0 }])
-      setEditingOrder(order)
-      setIsEditing(true)
-      setIsOpen(true)
-    }
+    if (!customer) return
+
+    setFormData({
+      first_name: customer.first_name,
+      last_name: customer.last_name,
+      phone_number: customer.phone_number,
+      city: order.city || "",
+      address: order.address || "",
+      order_date: (order.order_date || "").split("T")[0],
+    })
+
+    setOrderItems(order.order_items || [{ product_id: "", product_name: "", quantity: "", price: 0 }])
+    setEditingOrder(order)
+    setIsEditing(true)
+    setIsOpen(true)
   }
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text)
-  }
+  const copyToClipboard = (text: string) => navigator.clipboard.writeText(text)
 
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat("fr-DZ", {
+  const formatCurrency = (amount: number) =>
+    new Intl.NumberFormat("fr-DZ", {
       style: "currency",
       currency: "DZD",
     }).format(amount)
-  }
-
-  
-  const activeOrders = filteredOrders.filter((o) => !o.is_archived)
-  const archivedOrders = filteredOrders.filter((o) => o.is_archived && !o.is_swapped)
-  const filteredArchivedOrders = archivedOrders.filter(
-    (order) =>
-      order.customer_name.toLowerCase().includes(archivedSearchTerm.toLowerCase()) ||
-      order.order_reference.toLowerCase().includes(archivedSearchTerm.toLowerCase()) ||
-      (order.deletion_reason && order.deletion_reason.toLowerCase().includes(archivedSearchTerm.toLowerCase()))
-  )
-  const pendingOrders = activeOrders.filter((o) => o.status === "en attente")
-  const swappedOrders = orders.filter((o) => o.is_swapped)
-
-  const confirmedOrders = orders.filter((o) => o.status === "confirmée")
-  const archivedOrdersCount = confirmedOrders.filter((o) => o.is_archived).length
-  const swappedOrdersCount = confirmedOrders.filter((o) => o.is_swapped).length
-  const totalSales = confirmedOrders.reduce((sum, order) => sum + order.subtotal, 0) - archivedOrdersCount * 200 - swappedOrdersCount * 100
-  const totalOrders = orders.length
-
-  const getMonthlyStats = () => {
-    const monthlyOrders: { [key: string]: { count: number; sales: number; archivedCount: number; swappedCount: number } } = {}
-    orders.filter((o) => o.status === "confirmée").forEach(order => {
-      const date = new Date(order.order_date)
-      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
-      if (!monthlyOrders[monthKey]) {
-        monthlyOrders[monthKey] = { count: 0, sales: 0, archivedCount: 0, swappedCount: 0 }
-      }
-      monthlyOrders[monthKey].count += 1
-      monthlyOrders[monthKey].sales += order.subtotal
-      if (order.is_archived) {
-        monthlyOrders[monthKey].archivedCount += 1
-      }
-      if (order.is_swapped) {
-        monthlyOrders[monthKey].swappedCount += 1
-      }
-    })
-    return Object.entries(monthlyOrders).map(([month, stats]) => ({
-      month,
-      count: stats.count,
-      sales: stats.sales - stats.archivedCount * 200 - stats.swappedCount * 100,
-    })).sort((a, b) => b.month.localeCompare(a.month))
-  }
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold">Commandes Clients</h2>
+
         <Dialog open={isOpen} onOpenChange={setIsOpen}>
           <DialogTrigger asChild>
             <Button className="flex items-center gap-2">
@@ -633,10 +799,12 @@ const confirmStatusChange = async (newStatus: string) => {
               Nouvelle Commande
             </Button>
           </DialogTrigger>
+
           <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>{isEditing ? "Modifier la Commande Client" : "Créer une Commande Client"}</DialogTitle>
             </DialogHeader>
+
             <form onSubmit={handleSaveOrder} className="space-y-6">
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -670,6 +838,17 @@ const confirmStatusChange = async (newStatus: string) => {
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
+                  <Label htmlFor="order_date">Date</Label>
+                  <Input
+                    id="order_date"
+                    type="date"
+                    value={formData.order_date}
+                    onChange={(e) => setFormData({ ...formData, order_date: e.target.value })}
+                    required
+                  />
+                </div>
+
+                <div>
                   <Label htmlFor="city">Ville</Label>
                   <Select value={formData.city} onValueChange={(value) => setFormData({ ...formData, city: value })}>
                     <SelectTrigger>
@@ -684,7 +863,8 @@ const confirmStatusChange = async (newStatus: string) => {
                     </SelectContent>
                   </Select>
                 </div>
-                <div>
+
+                <div className="col-span-2">
                   <Label htmlFor="address">Adresse</Label>
                   <Input
                     id="address"
@@ -702,10 +882,7 @@ const confirmStatusChange = async (newStatus: string) => {
                   {orderItems.map((item, index) => (
                     <div key={index} className="flex gap-2 items-end">
                       <div className="flex-1">
-                        <Select
-                          value={item.product_id}
-                          onValueChange={(value) => handleItemChange(index, "product_id", value)}
-                        >
+                        <Select value={item.product_id} onValueChange={(value) => handleItemChange(index, "product_id", value)}>
                           <SelectTrigger>
                             <SelectValue placeholder="Sélectionner un produit" />
                           </SelectTrigger>
@@ -735,13 +912,7 @@ const confirmStatusChange = async (newStatus: string) => {
                     </div>
                   ))}
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handleAddItem}
-                  className="mt-3 bg-transparent"
-                >
+                <Button type="button" variant="outline" size="sm" onClick={handleAddItem} className="mt-3 bg-transparent">
                   + Ajouter Produit
                 </Button>
               </div>
@@ -757,9 +928,7 @@ const confirmStatusChange = async (newStatus: string) => {
                 </div>
                 <div className="bg-accent/10 p-3 rounded">
                   <p className="text-xs text-muted-foreground">Total</p>
-                  <p className="text-lg font-bold text-accent">
-                    {formatCurrency(calculateSubtotal() + getDeliveryCost())}
-                  </p>
+                  <p className="text-lg font-bold text-accent">{formatCurrency(calculateSubtotal() + getDeliveryCost())}</p>
                 </div>
               </div>
 
@@ -784,15 +953,33 @@ const confirmStatusChange = async (newStatus: string) => {
         </TabsList>
 
         <TabsContent value="active" className="space-y-4">
-          {/* Search field */}
-          <div className="relative">
-            <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Rechercher une commande..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-10"
-            />
+          <div className="flex gap-4 items-center">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Rechercher une commande..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-10"
+              />
+            </div>
+
+            <div>
+              <div className="w-32">
+              <Select value={selectedStatsMonth} onValueChange={setSelectedStatsMonth}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choisir un mois" />
+                </SelectTrigger>
+                <SelectContent>
+                  {monthOptions.map((monthKey) => (
+                    <SelectItem key={monthKey} value={monthKey}>
+                      {new Date(monthKey + "-01").toLocaleDateString("fr-FR", { year: "numeric", month: "long" })}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              </div>
+            </div>
           </div>
 
           {isLoading ? (
@@ -800,7 +987,7 @@ const confirmStatusChange = async (newStatus: string) => {
           ) : activeOrders.length === 0 ? (
             <Card>
               <CardContent className="pt-6 text-center text-muted-foreground">
-                {orders.filter((o) => !o.is_archived).length === 0
+                {filteredOrders.filter((o) => !o.is_archived).length === 0
                   ? "Aucune commande encore. Créez votre première commande client."
                   : "Aucune commande ne correspond à votre recherche."}
               </CardContent>
@@ -820,14 +1007,9 @@ const confirmStatusChange = async (newStatus: string) => {
                           </Button>
                           {(() => {
                             const swapSource = getSwapSourceInfo(order.id)
-                            if (swapSource) {
-                              return (
-                                <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded font-medium">
-                                  swap
-                                </span>
-                              )
-                            }
-                            return null
+                            return swapSource ? (
+                              <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded font-medium">swap</span>
+                            ) : null
                           })()}
                         </div>
                         <p className="text-sm text-muted-foreground mt-1">
@@ -835,30 +1017,25 @@ const confirmStatusChange = async (newStatus: string) => {
                         </p>
                         <p className="text-sm font-semibold mt-1">
                           Statut:{" "}
-                          <span className={order.status === "confirmée" ? "text-green-600" : "text-orange-600"}>
-                            {order.status}
-                          </span>
+                          <span className={order.status === "confirmée" ? "text-green-600" : "text-orange-600"}>{order.status}</span>
                         </p>
                       </div>
+
                       <div className="flex gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleEditOrder(order)}
-                        >
+                        <Button variant="outline" size="sm" onClick={() => handleEditOrder(order)}>
                           <Edit className="h-4 w-4 mr-2" />
                           Modifier
                         </Button>
+
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() =>
-                            handleChangeStatus(order.id, order.status === "en attente" ? "confirmée" : "en attente")
-                          }
+                          onClick={() => handleChangeStatus(order.id, order.status === "en attente" ? "confirmée" : "en attente")}
                         >
                           <CheckCircle2 className="h-4 w-4 mr-2" />
                           {order.status === "en attente" ? "Confirmer" : "Annuler"}
                         </Button>
+
                         {order.status === "en attente" && (
                           <>
                             <Button
@@ -869,11 +1046,16 @@ const confirmStatusChange = async (newStatus: string) => {
                             >
                               <Archive className="h-4 w-4" />
                             </Button>
+
                             <Button
                               variant="outline"
                               size="sm"
                               onClick={() => handleSwapOrder(order.id)}
-                              className={order.is_swapped ? "text-blue-600 border-blue-600 hover:text-blue-600 hover:bg-blue-50" : "text-muted-foreground border-muted-foreground hover:text-blue-600 hover:border-blue-600 hover:bg-blue-50"}
+                              className={
+                                order.is_swapped
+                                  ? "text-blue-600 border-blue-600 hover:text-blue-600 hover:bg-blue-50"
+                                  : "text-muted-foreground border-muted-foreground hover:text-blue-600 hover:border-blue-600 hover:bg-blue-50"
+                              }
                               title={order.is_swapped ? "Déjà échangé" : "Marquer comme échangé"}
                             >
                               <RefreshCw className="h-4 w-4 mr-1" />
@@ -884,23 +1066,24 @@ const confirmStatusChange = async (newStatus: string) => {
                       </div>
                     </div>
                   </CardHeader>
+
                   <CardContent className="space-y-3">
-                    {order.order_items && order.order_items.length > 0 && (
+                    {order.order_items?.length ? (
                       <div className="bg-muted p-3 rounded text-sm">
                         <p className="font-semibold mb-2">Produits:</p>
                         <ul className="space-y-1 text-xs">
                           {order.order_items.map((item: any, idx: number) => (
                             <li key={idx}>
-                              {item.product_name}: {item.quantity} x {formatCurrency(item.price)} ={" "}
-                              {formatCurrency(Number.parseFloat(item.quantity) * item.price)}
+                              {item.product_name}: {item.quantity} x {formatCurrency(item.price)} = {formatCurrency(Number.parseFloat(item.quantity) * item.price)}
                             </li>
                           ))}
                         </ul>
                       </div>
-                    )}
+                    ) : null}
+
                     {order.status_comment && !(() => {
                       try {
-                        const data = JSON.parse(order.status_comment)
+                        const data = JSON.parse(order.status_comment as string)
                         return data.type === "swap_target" || data.type === "swap_history"
                       } catch {
                         return false
@@ -911,22 +1094,36 @@ const confirmStatusChange = async (newStatus: string) => {
                         <p className="text-blue-800 text-xs">{order.status_comment}</p>
                       </div>
                     )}
+
                     {(() => {
                       const swapTarget = getSwapTargetInfo(order)
-                      if (swapTarget) {
-                        return (
-                          <div className="bg-blue-50 p-3 rounded text-sm border border-blue-200">
-                            <p className="font-semibold text-blue-900 mb-2">swap</p>
-                            <div className="space-y-1 text-xs text-blue-800">
-                              <p><strong>Client source:</strong> {swapTarget.swap_source_customer_name}</p>
-                              <p><strong>Réf. commande source:</strong> {swapTarget.swap_source_order_reference}</p>
-                              <p><strong>Date de l'échange:</strong> {new Date(swapTarget.swap_date).toLocaleDateString("fr-FR", { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
-                            </div>
+                      if (!swapTarget) return null
+
+                      return (
+                        <div className="bg-blue-50 p-3 rounded text-sm border border-blue-200">
+                          <p className="font-semibold text-blue-900 mb-2">swap</p>
+                          <div className="space-y-1 text-xs text-blue-800">
+                            <p>
+                              <strong>Client source:</strong> {swapTarget.swap_source_customer_name}
+                            </p>
+                            <p>
+                              <strong>Réf. commande source:</strong> {swapTarget.swap_source_order_reference}
+                            </p>
+                            <p>
+                              <strong>Date de l'échange:</strong>{" "}
+                              {new Date(swapTarget.swap_date).toLocaleDateString("fr-FR", {
+                                day: "2-digit",
+                                month: "long",
+                                year: "numeric",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </p>
                           </div>
-                        )
-                      }
-                      return null
+                        </div>
+                      )
                     })()}
+
                     <div className="border-t border-border pt-3 space-y-2">
                       <div className="flex justify-between text-sm">
                         <span className="text-muted-foreground">Sous-total</span>
@@ -965,56 +1162,66 @@ const confirmStatusChange = async (newStatus: string) => {
                           <code className="text-xs bg-muted px-2 py-1 rounded">{order.order_reference}</code>
                           {(() => {
                             const swapSource = getSwapSourceInfo(order.id)
-                            if (swapSource) {
-                              return (
-                                <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded font-medium">
-                                  swap
-                                </span>
-                              )
-                            }
-                            return null
+                            return swapSource ? (
+                              <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded font-medium">swap</span>
+                            ) : null
                           })()}
                         </div>
                         <p className="text-sm text-muted-foreground mt-1">
                           {new Date(order.order_date).toLocaleDateString("fr-FR")} • {order.address}, {order.city}
                         </p>
                       </div>
+
                       <Button variant="default" size="sm" onClick={() => handleChangeStatus(order.id, "confirmée")}>
                         <CheckCircle2 className="h-4 w-4 mr-2" />
                         Confirmer
                       </Button>
                     </div>
                   </CardHeader>
+
                   <CardContent className="space-y-3">
-                    {order.order_items && order.order_items.length > 0 && (
+                    {order.order_items?.length ? (
                       <div className="bg-muted p-3 rounded text-sm">
                         <p className="font-semibold mb-2">Produits:</p>
                         <ul className="space-y-1 text-xs">
                           {order.order_items.map((item: any, idx: number) => (
                             <li key={idx}>
-                              {item.product_name}: {item.quantity} x {formatCurrency(item.price)} ={" "}
-                              {formatCurrency(Number.parseFloat(item.quantity) * item.price)}
+                              {item.product_name}: {item.quantity} x {formatCurrency(item.price)} = {formatCurrency(Number.parseFloat(item.quantity) * item.price)}
                             </li>
                           ))}
                         </ul>
                       </div>
-                    )}
+                    ) : null}
+
                     {(() => {
                       const swapTarget = getSwapTargetInfo(order)
-                      if (swapTarget) {
-                        return (
-                          <div className="bg-blue-50 p-3 rounded text-sm border border-blue-200">
-                            <p className="font-semibold text-blue-900 mb-2">swap</p>
-                            <div className="space-y-1 text-xs text-blue-800">
-                              <p><strong>Client source:</strong> {swapTarget.swap_source_customer_name}</p>
-                              <p><strong>Réf. commande source:</strong> {swapTarget.swap_source_order_reference}</p>
-                              <p><strong>Date de l'échange:</strong> {new Date(swapTarget.swap_date).toLocaleDateString("fr-FR", { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
-                            </div>
+                      if (!swapTarget) return null
+
+                      return (
+                        <div className="bg-blue-50 p-3 rounded text-sm border border-blue-200">
+                          <p className="font-semibold text-blue-900 mb-2">swap</p>
+                          <div className="space-y-1 text-xs text-blue-800">
+                            <p>
+                              <strong>Client source:</strong> {swapTarget.swap_source_customer_name}
+                            </p>
+                            <p>
+                              <strong>Réf. commande source:</strong> {swapTarget.swap_source_order_reference}
+                            </p>
+                            <p>
+                              <strong>Date de l'échange:</strong>{" "}
+                              {new Date(swapTarget.swap_date).toLocaleDateString("fr-FR", {
+                                day: "2-digit",
+                                month: "long",
+                                year: "numeric",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </p>
                           </div>
-                        )
-                      }
-                      return null
+                        </div>
+                      )
                     })()}
+
                     <div className="border-t border-border pt-3 space-y-2">
                       <div className="flex justify-between text-sm">
                         <span className="text-muted-foreground">Sous-total</span>
@@ -1037,7 +1244,6 @@ const confirmStatusChange = async (newStatus: string) => {
         </TabsContent>
 
         <TabsContent value="archived" className="space-y-4">
-          {/* Search field for archived orders */}
           <div className="relative">
             <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
             <Input
@@ -1051,9 +1257,7 @@ const confirmStatusChange = async (newStatus: string) => {
           {archivedOrders.length === 0 ? (
             <Card>
               <CardContent className="pt-6 text-center text-muted-foreground">
-                {orders.filter((o) => o.is_archived).length === 0
-                  ? "Aucune commande archivée"
-                  : "Aucune commande archivée ne correspond à votre recherche."}
+                {orders.filter((o) => o.is_archived).length === 0 ? "Aucune commande archivée" : "Aucune commande archivée ne correspond à votre recherche."}
               </CardContent>
             </Card>
           ) : (
@@ -1064,9 +1268,7 @@ const confirmStatusChange = async (newStatus: string) => {
                     <div className="flex items-center justify-between">
                       <div>
                         <CardTitle className="text-lg">{order.customer_name}</CardTitle>
-                        <p className="text-sm text-muted-foreground mt-1">
-                          {new Date(order.order_date).toLocaleDateString("fr-FR")}
-                        </p>
+                        <p className="text-sm text-muted-foreground mt-1">{new Date(order.order_date).toLocaleDateString("fr-FR")}</p>
                       </div>
                       <Button variant="outline" size="sm" onClick={() => handleRestoreOrder(order.id)}>
                         <RotateCcw className="h-4 w-4 mr-2" />
@@ -1074,6 +1276,7 @@ const confirmStatusChange = async (newStatus: string) => {
                       </Button>
                     </div>
                   </CardHeader>
+
                   <CardContent className="space-y-3">
                     <div className="bg-destructive/10 p-2 rounded text-sm">
                       <p className="text-destructive text-xs font-semibold mb-1">Raison d'archivage:</p>
@@ -1093,9 +1296,7 @@ const confirmStatusChange = async (newStatus: string) => {
         <TabsContent value="swaps" className="space-y-4">
           {swappedOrders.length === 0 ? (
             <Card>
-              <CardContent className="pt-6 text-center text-muted-foreground">
-                Aucune commande échangée
-              </CardContent>
+              <CardContent className="pt-6 text-center text-muted-foreground">Aucune commande échangée</CardContent>
             </Card>
           ) : (
             <div className="space-y-4">
@@ -1109,40 +1310,51 @@ const confirmStatusChange = async (newStatus: string) => {
                           <div className="flex items-center gap-2">
                             <CardTitle className="text-lg">{order.customer_name}</CardTitle>
                             <code className="text-xs bg-muted px-2 py-1 rounded">{order.order_reference}</code>
-                            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded font-medium">
-                              Échangé
-                            </span>
+                            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded font-medium">Échangé</span>
                           </div>
-                          <p className="text-sm text-muted-foreground mt-1">
-                            {new Date(order.order_date).toLocaleDateString("fr-FR")}
-                          </p>
+                          <p className="text-sm text-muted-foreground mt-1">{new Date(order.order_date).toLocaleDateString("fr-FR")}</p>
                         </div>
                       </div>
                     </CardHeader>
+
                     <CardContent className="space-y-3">
-                      {swapHistory && (
+                      {swapHistory ? (
                         <div className="bg-blue-50 p-3 rounded text-sm border border-blue-200">
                           <p className="font-semibold text-blue-900 mb-2">Historique de l'échange</p>
                           <div className="space-y-1 text-xs text-blue-800">
-                            <p><strong>Client remplaçant:</strong> {swapHistory.swapped_with_customer_name}</p>
-                            <p><strong>Réf. commande remplaçante:</strong> {swapHistory.swapped_with_order_reference}</p>
-                            <p><strong>Date de l'échange:</strong> {new Date(swapHistory.swap_date).toLocaleDateString("fr-FR", { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+                            <p>
+                              <strong>Client remplaçant:</strong> {swapHistory.swapped_with_customer_name}
+                            </p>
+                            <p>
+                              <strong>Réf. commande remplaçante:</strong> {swapHistory.swapped_with_order_reference}
+                            </p>
+                            <p>
+                              <strong>Date de l'échange:</strong>{" "}
+                              {new Date(swapHistory.swap_date).toLocaleDateString("fr-FR", {
+                                day: "2-digit",
+                                month: "long",
+                                year: "numeric",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </p>
                           </div>
                         </div>
-                      )}
-                      {order.order_items && order.order_items.length > 0 && (
+                      ) : null}
+
+                      {order.order_items?.length ? (
                         <div className="bg-muted p-3 rounded text-sm">
                           <p className="font-semibold mb-2">Produits échangés:</p>
                           <ul className="space-y-1 text-xs">
                             {order.order_items.map((item: any, idx: number) => (
                               <li key={idx}>
-                                {item.product_name}: {item.quantity} x {formatCurrency(item.price)} ={" "}
-                                {formatCurrency(Number.parseFloat(item.quantity) * item.price)}
+                                {item.product_name}: {item.quantity} x {formatCurrency(item.price)} = {formatCurrency(Number.parseFloat(item.quantity) * item.price)}
                               </li>
                             ))}
                           </ul>
                         </div>
-                      )}
+                      ) : null}
+
                       <div className="border-t border-border pt-3">
                         <div className="flex justify-between text-sm">
                           <span className="text-muted-foreground">Sous-total</span>
@@ -1166,51 +1378,208 @@ const confirmStatusChange = async (newStatus: string) => {
         </TabsContent>
 
         <TabsContent value="statistics" className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg">Vue d'ensemble</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <span className="text-muted-foreground">Total des Commandes</span>
-                  <span className="text-2xl font-bold">{totalOrders}</span>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div>
+                <h3 className="text-lg font-semibold">Statistiques</h3>
+                <p className="text-sm text-muted-foreground">Sélectionnez un mois pour mettre à jour l'analyse.</p>
+              </div>
+            </div>
+
+            <div>
+              <Select value={selectedStatsMonth} onValueChange={setSelectedStatsMonth}>
+                <SelectTrigger className="w-[220px]">
+                  <SelectValue placeholder="Choisir un mois" />
+                </SelectTrigger>
+                <SelectContent>
+                  {monthOptions.map((monthKey) => (
+                    <SelectItem key={monthKey} value={monthKey}>
+                      {new Date(monthKey + "-01").toLocaleDateString("fr-FR", { year: "numeric", month: "long" })}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-4">
+            <Card className="lg:col-span-1 overflow-hidden">
+              <div className="bg-gradient-to-br from-blue-50 via-background to-background p-6 border-b">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg">Vue d'ensemble</CardTitle>
+                </CardHeader>
+
+                <div className="grid grid-cols-1 gap-3">
+                  <div className="rounded-lg bg-white/60 border p-4">
+                    <div className="text-xs text-muted-foreground">Total des commandes</div>
+                    <div className="text-3xl font-bold text-blue-700">{overviewOrdersCountForSelectedMonth}</div>
+                  </div>
+
+                  <div className="rounded-lg bg-white/60 border p-4">
+                    <div className="text-xs text-muted-foreground">Ventes totales</div>
+                    <div className="text-3xl font-bold text-emerald-700">{formatCurrency(overviewSalesForSelectedMonth)}</div>
+                  </div>
                 </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-muted-foreground">Ventes Totales</span>
-                  <span className="text-2xl font-bold text-accent">{formatCurrency(totalSales)}</span>
+              </div>
+
+              <CardContent className="p-6 pt-4 space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-lg border bg-orange-50 p-3">
+                    <p className="text-xs text-orange-700">Annulées</p>
+                    <p className="text-xl font-bold text-orange-600">{currentMonthCanceledCount}</p>
+                  </div>
+                  <div className="rounded-lg border bg-blue-50 p-3">
+                    <p className="text-xs text-blue-700">Échangées</p>
+                    <p className="text-xl font-bold text-blue-600">{currentMonthSwappedCount}</p>
+                  </div>
                 </div>
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg">Commandes par Mois</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {getMonthlyStats().map(({month, count, sales}) => (
-                    <div key={month} className="flex justify-between items-center p-3 bg-muted rounded">
-                      <div>
-                        <p className="font-medium">{new Date(month + '-01').toLocaleDateString('fr-FR', { year: 'numeric', month: 'long' })}</p>
-                        <p className="text-sm text-muted-foreground">{count} commande{count > 1 ? 's' : ''}</p>
+
+            <Card className="lg:col-span-2 overflow-hidden">
+              <div className="bg-gradient-to-r from-purple-50 to-blue-50 p-6 border-b">
+                <CardHeader className="pb-0">
+                  <CardTitle className="text-lg">Produits les plus achetés</CardTitle>
+                </CardHeader>
+              </div>
+
+              <CardContent className="p-6">
+                {pieData.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
+                    <div className="md:col-span-1">
+                      <ChartContainer
+                        config={{
+                          units: { label: "Unités", color: "hsl(var(--chart-1))" },
+                        }}
+                        className="w-full"
+                      >
+                        <div className="flex items-center justify-center">
+                          <PieChart width={320} height={240}>
+                            <ChartTooltip content={<ChartTooltipContent />} />
+                            <Pie
+                              data={pieData}
+                              dataKey="units"
+                              nameKey="name"
+                              cx="50%"
+                              cy="50%"
+                              innerRadius={55}
+                              outerRadius={92}
+                              paddingAngle={2}
+                              stroke="rgba(255,255,255,0.95)"
+                              strokeWidth={2}
+                              fill="#8884d8"
+                            >
+                              {pieData.map((entry, idx) => (
+                                <cell key={`cell-${idx}`} fill={entry.fill} />
+                              ))}
+                            </Pie>
+                          </PieChart>
+                        </div>
+                      </ChartContainer>
+                    </div>
+
+                    <div className="md:col-span-2 space-y-4">
+                      <div className="rounded-lg border bg-muted/30 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-xs text-muted-foreground">Best seller</p>
+                            <p className="mt-1 text-lg font-bold">{topProduct?.name || "-"}</p>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-xs text-muted-foreground">Unités</div>
+                            <div className="text-2xl font-bold text-purple-700">{topProduct?.units?.toLocaleString("fr-FR") || 0}</div>
+                          </div>
+                        </div>
                       </div>
-                      <div className="text-right">
-                        <p className="font-bold text-accent">{formatCurrency(sales)}</p>
+
+                      <div className="rounded-lg border p-4">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs text-muted-foreground">Répartition (unités)</p>
+                          <p className="text-xs text-muted-foreground">(du mois sélectionné)</p>
+                        </div>
+
+                        <div className="mt-3 space-y-2">
+                          {pieData.map((slice) => (
+                            <div key={slice.name} className="flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="h-3 w-3 rounded-full" style={{ backgroundColor: slice.fill }} />
+                                <span className="text-sm truncate">{slice.name}</span>
+                              </div>
+                              <div className="text-sm font-medium tabular-nums">{slice.units.toLocaleString("fr-FR")}</div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </div>
-                  ))}
-                  {getMonthlyStats().length === 0 && (
-                    <p className="text-muted-foreground text-center py-4">Aucune donnée disponible</p>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground text-center py-10">Aucune vente ce mois-ci</p>
+                )}
               </CardContent>
             </Card>
           </div>
+
+        <div className="flex gap-6">
+          <div className="flex-1">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">CA du mois</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Mois sélectionné</p>
+                    <p className="font-medium">{new Date(selectedStatsMonth + "-01").toLocaleDateString("fr-FR", { year: "numeric", month: "long" })}</p>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      {overviewOrdersCountForSelectedMonth} commande{overviewOrdersCountForSelectedMonth > 1 ? "s" : ""}
+                    </p>
+                  </div>
+
+                  <div className="sm:text-right">
+<p className="text-sm text-muted-foreground">Ventes</p>
+<p className="font-bold text-accent text-xl">{formatCurrency(overviewSalesForSelectedMonth)}</p>
+                  </div>
+                </div>
+
+                {overviewOrdersCountForSelectedMonth === 0 && (
+                  <p className="text-muted-foreground text-center py-4">Aucune donnée disponible</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="flex-1">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">bénéfice du mois</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Mois sélectionné</p>
+                    <p className="font-medium">{new Date(selectedStatsMonth + "-01").toLocaleDateString("fr-FR", { year: "numeric", month: "long" })}</p>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      {overviewOrdersCountForSelectedMonth} commande{overviewOrdersCountForSelectedMonth > 1 ? "s" : ""}
+                    </p>
+                  </div>
+
+                  <div className="sm:text-right">
+<p className="text-sm text-muted-foreground">Profit</p>
+                    <p className="font-bold text-accent text-xl">{formatCurrency(overviewProfitForSelectedMonth)}</p>
+                  </div>
+                </div>
+
+                {overviewOrdersCountForSelectedMonth === 0 && (
+                  <p className="text-muted-foreground text-center py-4">Aucune donnée disponible</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </div>
         </TabsContent>
       </Tabs>
 
-      {/* Status modal */}
       {statusModal.isOpen && (
         <Dialog
           open={statusModal.isOpen}
@@ -1220,6 +1589,7 @@ const confirmStatusChange = async (newStatus: string) => {
             <DialogHeader>
               <DialogTitle>Changer le Statut de la Commande</DialogTitle>
             </DialogHeader>
+
             <div className="space-y-4">
               <div>
                 <Label htmlFor="comment">Commentaire (obligatoire)</Label>
@@ -1231,6 +1601,7 @@ const confirmStatusChange = async (newStatus: string) => {
                   rows={3}
                 />
               </div>
+
               <div className="flex gap-3 justify-end">
                 <Button variant="outline" onClick={() => setStatusModal({ isOpen: false, orderId: "", comment: "" })}>
                   Annuler
@@ -1250,7 +1621,6 @@ const confirmStatusChange = async (newStatus: string) => {
         </Dialog>
       )}
 
-      {/* Swap modal */}
       {swapModal.isOpen && (
         <Dialog
           open={swapModal.isOpen}
@@ -1269,6 +1639,7 @@ const confirmStatusChange = async (newStatus: string) => {
             <DialogHeader>
               <DialogTitle>Échanger la Commande</DialogTitle>
             </DialogHeader>
+
             <div className="space-y-4">
               <div className="bg-muted p-3 rounded text-sm">
                 <p className="font-semibold mb-2">Produits de la commande actuelle:</p>
@@ -1282,9 +1653,7 @@ const confirmStatusChange = async (newStatus: string) => {
               </div>
 
               {swapModal.suggestions.length === 0 ? (
-                <p className="text-muted-foreground text-sm">
-                  Aucune commande en attente ne correspond exactement aux mêmes produits et quantités.
-                </p>
+                <p className="text-muted-foreground text-sm">Aucune commande en attente ne correspond exactement aux mêmes produits et quantités.</p>
               ) : (
                 <div className="space-y-3">
                   <p className="text-sm font-medium">Sélectionnez une commande à échanger:</p>
@@ -1297,20 +1666,14 @@ const confirmStatusChange = async (newStatus: string) => {
                             ? "border-blue-500 bg-blue-50"
                             : "border-border hover:border-blue-300"
                         }`}
-                        onClick={() =>
-                          setSwapModal({ ...swapModal, selectedOrderId: suggestion.id })
-                        }
+                        onClick={() => setSwapModal({ ...swapModal, selectedOrderId: suggestion.id })}
                       >
                         <div className="flex items-center justify-between">
                           <div>
                             <p className="font-medium text-sm">{suggestion.customer_name}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {suggestion.order_reference}
-                            </p>
+                            <p className="text-xs text-muted-foreground">{suggestion.order_reference}</p>
                           </div>
-                          {swapModal.selectedOrderId === suggestion.id && (
-                            <CheckCircle2 className="h-4 w-4 text-blue-500" />
-                          )}
+                          {swapModal.selectedOrderId === suggestion.id && <CheckCircle2 className="h-4 w-4 text-blue-500" />}
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground">
                           {suggestion.order_items?.map((item: any, idx: number) => (
@@ -1329,22 +1692,11 @@ const confirmStatusChange = async (newStatus: string) => {
               <div className="flex gap-3 justify-end">
                 <Button
                   variant="outline"
-                  onClick={() =>
-                    setSwapModal({
-                      isOpen: false,
-                      orderId: "",
-                      orderItems: [],
-                      suggestions: [],
-                      selectedOrderId: "",
-                    })
-                  }
+                  onClick={() => setSwapModal({ isOpen: false, orderId: "", orderItems: [], suggestions: [], selectedOrderId: "" })}
                 >
                   Annuler
                 </Button>
-                <Button
-                  onClick={confirmSwap}
-                  disabled={swapModal.suggestions.length === 0 || !swapModal.selectedOrderId}
-                >
+                <Button onClick={confirmSwap} disabled={swapModal.suggestions.length === 0 || !swapModal.selectedOrderId}>
                   Confirmer l'échange
                 </Button>
               </div>
@@ -1353,16 +1705,13 @@ const confirmStatusChange = async (newStatus: string) => {
         </Dialog>
       )}
 
-      {/* Archive modal */}
       {deleteModal.isOpen && (
-        <Dialog
-          open={deleteModal.isOpen}
-          onOpenChange={(open) => !open && setDeleteModal({ isOpen: false, orderId: "", reason: "" })}
-        >
+        <Dialog open={deleteModal.isOpen} onOpenChange={(open) => !open && setDeleteModal({ isOpen: false, orderId: "", reason: "" })}>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Archiver la Commande</DialogTitle>
             </DialogHeader>
+
             <div className="space-y-4">
               <div>
                 <Label htmlFor="reason">Raison de l'archivage (obligatoire)</Label>
@@ -1374,6 +1723,7 @@ const confirmStatusChange = async (newStatus: string) => {
                   rows={3}
                 />
               </div>
+
               <div className="flex gap-3 justify-end">
                 <Button variant="outline" onClick={() => setDeleteModal({ isOpen: false, orderId: "", reason: "" })}>
                   Annuler
@@ -1389,3 +1739,4 @@ const confirmStatusChange = async (newStatus: string) => {
     </div>
   )
 }
+

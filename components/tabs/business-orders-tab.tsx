@@ -12,13 +12,23 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Plus, Trash2, Copy, Search, Archive, RotateCcw, Edit } from "lucide-react"
+import { Pie, PieChart } from "recharts"
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+} from "@/components/ui/chart"
+
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+
 
 interface Product {
   id: string
   name: string
   selling_price: number
+  production_cost?: number
 }
+
 
 interface Professionnel {
   id: string
@@ -94,7 +104,7 @@ export default function BusinessOrdersTab() {
     try {
       setIsLoading(true)
       const [productsRes, professionnelsRes, ordersRes] = await Promise.all([
-        supabase.from("products").select("id, name, selling_price").order("name"),
+supabase.from("products").select("id, name, selling_price, production_cost").order("name"),
         supabase.from("professionnels").select("*").order("name"),
         supabase.from("professionnels_orders").select("*").order("order_date", { ascending: false }),
       ])
@@ -316,25 +326,140 @@ export default function BusinessOrdersTab() {
     }).format(amount)
   }
 
-  const activeOrders = filteredOrders.filter((o) => !o.is_archived)
-  const archivedOrders = filteredOrders.filter((o) => o.is_archived)
+  const [selectedActiveMonth, setSelectedActiveMonth] = useState<string>(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+  })
+
+  // Front-end only payment status (no DB changes)
+  // Payment status for the CREATE/EDIT form (UI only)
+  const [paymentStatus, setPaymentStatus] = useState<"total" | "partial">("total")
+  const [paidAmount, setPaidAmount] = useState<number>(0)
+
+  const [paymentStatusByOrderId, setPaymentStatusByOrderId] = useState<Record<string, "total" | "partial">>({})
+  const [paidAmountByOrderId, setPaidAmountByOrderId] = useState<Record<string, number>>({})
+
+
+  const getPaidAmount = (order: BusinessOrder) => {
+    const status = paymentStatusByOrderId[order.id] ?? "total"
+    if (status !== "partial") return order.total_amount
+    const raw = paidAmountByOrderId[order.id]
+    const n = typeof raw === "number" && Number.isFinite(raw) ? raw : 0
+    return Math.max(0, Math.min(order.total_amount ?? 0, n))
+  }
+
+  const getRemainingAmount = (order: BusinessOrder) => {
+    const paid = getPaidAmount(order)
+    return Math.max(0, (order.total_amount ?? 0) - paid)
+  }
+
+
+
+  const filterOrdersBySelectedMonth = (list: BusinessOrder[]) => {
+    if (!selectedActiveMonth) return list
+
+    const [yStr, mStr] = selectedActiveMonth.split("-")
+    const y = Number.parseInt(yStr, 10)
+    const mIndex = Number.parseInt(mStr, 10) - 1
+
+    const start = new Date(y, mIndex, 1)
+    const end = new Date(y, mIndex + 1, 1)
+
+    return list.filter((o) => {
+      const d = new Date(o.order_date)
+      if (Number.isNaN(d.getTime())) return false
+      return d >= start && d < end
+    })
+  }
+
+  const activeOrders = filterOrdersBySelectedMonth(filteredOrders.filter((o) => !o.is_archived))
+  const archivedOrders = filterOrdersBySelectedMonth(filteredOrders.filter((o) => o.is_archived))
+
 
   const totalSales = orders.reduce((sum, order) => sum + order.total_amount, 0)
   const totalOrders = orders.length
 
-  const getMonthlyStats = () => {
-    const monthlyOrders: { [key: string]: { count: number; sales: number } } = {}
-    orders.forEach(order => {
-      const date = new Date(order.order_date)
-      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
-      if (!monthlyOrders[monthKey]) {
-        monthlyOrders[monthKey] = { count: 0, sales: 0 }
-      }
-      monthlyOrders[monthKey].count += 1
-      monthlyOrders[monthKey].sales += order.total_amount
+  // Month selector for statistics
+  const [selectedStatsMonth, setSelectedStatsMonth] = useState<string>(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  })
+
+  const monthOptions = (() => {
+    const set = new Set<string>()
+    orders.forEach((order) => {
+      const d = new Date(order.order_date)
+      if (Number.isNaN(d.getTime())) return
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+      set.add(key)
     })
-    return Object.entries(monthlyOrders).sort(([a], [b]) => b.localeCompare(a))
-  }
+    // Ensure current month always exists
+    const now = new Date()
+    set.add(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
+    return Array.from(set).sort((a, b) => b.localeCompare(a))
+  })()
+
+  const monthStats = (() => {
+    if (!selectedStatsMonth) return { count: 0, sales: 0, profit: 0 }
+
+    const [yStr, mStr] = selectedStatsMonth.split('-')
+    const y = Number.parseInt(yStr, 10)
+    const mIndex = Number.parseInt(mStr, 10) - 1
+    const start = new Date(y, mIndex, 1)
+    const end = new Date(y, mIndex + 1, 1)
+
+    const filtered = orders.filter((o) => {
+      const raw = o.order_date
+      const d = new Date(raw)
+      const isValid = !Number.isNaN(d.getTime())
+      if (!isValid) return false
+      return d >= start && d < end
+    })
+
+    const sales = filtered.reduce((sum, o) => sum + (o.total_amount || 0), 0)
+
+    // Monthly profit for business orders:
+    // sum over all orders in the selected month of:
+    //   (unitSellingPriceRecordedOnOrder - product.production_cost) * quantity
+    //
+    // In this UI, each order item stores `price` (selling price recorded on creation) and `quantity`.
+    // We need to join `item.product_id` with `products` to get `production_cost`.
+    const productsMap = Object.fromEntries(products.map((p) => [p.id, p])) as Record<
+      string,
+      Product
+    >
+
+    const profit = filtered.reduce((orderSum, order) => {
+      const items = order.order_items || []
+      return (
+        orderSum +
+        items.reduce((itemSum, item: any) => {
+          const qty = Number.parseFloat(item.quantity) || 0
+          const unitSellingPrice = Number.parseFloat(String(item.price ?? 0)) || 0
+          const product = productsMap[item.product_id]
+          // production_cost is optional in types because the UI fetch may not always include it.
+          // default to 0 when missing.
+          const productionCost = Number((product as any)?.production_cost ?? 0)
+
+          return itemSum + (unitSellingPrice - productionCost) * qty
+        }, 0)
+      )
+    }, 0)
+
+
+    return {
+      count: filtered.length,
+      sales,
+      profit,
+    }
+  })()
+
+  // Keep variable names consistent with the UI below (same concept as customer-orders-tab).
+  const overviewOrdersCountForSelectedMonth = monthStats.count
+  const overviewSalesForSelectedMonth = monthStats.sales
+  const overviewProfitForSelectedMonth = monthStats.profit
+
+
 
   return (
     <div className="space-y-6">
@@ -393,6 +518,33 @@ export default function BusinessOrdersTab() {
                   rows={3}
                 />
               </div>
+
+              {/* Payment status (front-end only) */}
+              <div className="grid grid-cols-1 gap-3">
+                <div className="flex items-center gap-3">
+                  <Label className="w-40" htmlFor="payment_status">Statut paiement</Label>
+                  <Select
+                    value={"total"}
+                    onValueChange={(value) => {
+                      // The UI-only logic for partially paid is not implemented yet.
+                      // Keep dropdown selectable without throwing.
+                      if (value === "partial") {
+                        // Temporarily allow selection until the partial-payment UI is implemented.
+                        // Keep the value selectable and do not block the user.
+                      }
+                    }}
+                  >
+                    <SelectTrigger id="payment_status" className="flex-1">
+                      <SelectValue placeholder="Choisir" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="total">total paid</SelectItem>
+                      <SelectItem value="partial">Partially Paid</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
 
               <div>
                 <Label className="mb-3 block">Produits</Label>
@@ -491,16 +643,35 @@ export default function BusinessOrdersTab() {
         </TabsList>
 
         <TabsContent value="active" className="space-y-4">
-          {/* Search field */}
-          <div className="relative">
-            <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Rechercher une commande..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-10"
-            />
-          </div>
+          <div className="flex items-center gap-4">
+  <div className="relative flex-1 min-w-0">
+    <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+    <Input
+      placeholder="Rechercher une commande..."
+      value={searchTerm}
+      onChange={(e) => setSearchTerm(e.target.value)}
+      className="pl-10"
+    />
+  </div>
+
+  <Select value={selectedActiveMonth} onValueChange={setSelectedActiveMonth}>
+    <SelectTrigger className="w-[220px] shrink-0">
+      <SelectValue placeholder="Choisir un mois" />
+    </SelectTrigger>
+    <SelectContent>
+      {monthOptions.map((monthKey) => (
+        <SelectItem key={monthKey} value={monthKey}>
+          {new Date(monthKey + "-01").toLocaleDateString("fr-FR", {
+            year: "numeric",
+            month: "long",
+          })}
+        </SelectItem>
+      ))}
+    </SelectContent>
+  </Select>
+</div>
+
+          
 
           {isLoading ? (
             <p className="text-muted-foreground">Chargement des commandes...</p>
@@ -624,48 +795,267 @@ export default function BusinessOrdersTab() {
           )}
         </TabsContent>
 
+        
+
         <TabsContent value="statistics" className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg">Vue d'ensemble</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <span className="text-muted-foreground">Total des Commandes</span>
-                  <span className="text-2xl font-bold">{totalOrders}</span>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div>
+                <h3 className="text-lg font-semibold">Statistiques</h3>
+                <p className="text-sm text-muted-foreground">Sélectionnez un mois pour mettre à jour l'analyse.</p>
+              </div>
+            </div>
+
+            <div>
+              <Select value={selectedStatsMonth} onValueChange={setSelectedStatsMonth}>
+                <SelectTrigger className="w-[220px]">
+                  <SelectValue placeholder="Choisir un mois" />
+                </SelectTrigger>
+                <SelectContent>
+                  {monthOptions.map((monthKey) => (
+                    <SelectItem key={monthKey} value={monthKey}>
+                      {new Date(monthKey + "-01").toLocaleDateString("fr-FR", { year: "numeric", month: "long" })}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-4">
+            <Card className="lg:col-span-1 overflow-hidden">
+              <div className="bg-gradient-to-br from-blue-50 via-background to-background p-6 border-b">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg">Vue d'ensemble</CardTitle>
+                </CardHeader>
+
+                <div className="grid grid-cols-1 gap-3">
+                  <div className="rounded-lg bg-white/60 border p-4">
+                    <div className="text-xs text-muted-foreground">Total des commandes</div>
+                    <div className="text-3xl font-bold text-blue-700">{overviewOrdersCountForSelectedMonth}</div>
+                  </div>
+
+                  <div className="rounded-lg bg-white/60 border p-4">
+                    <div className="text-xs text-muted-foreground">Ventes totales</div>
+                    <div className="text-3xl font-bold text-emerald-700">{formatCurrency(overviewSalesForSelectedMonth)}</div>
+                  </div>
                 </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-muted-foreground">Ventes Totales</span>
-                  <span className="text-2xl font-bold text-accent">{formatCurrency(totalSales)}</span>
-                </div>
-              </CardContent>
+              </div>
+
+              
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg">Commandes par Mois</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {getMonthlyStats().map(([month, stats]) => (
-                    <div key={month} className="flex justify-between items-center p-3 bg-muted rounded">
-                      <div>
-                        <p className="font-medium">{new Date(month + '-01').toLocaleDateString('fr-FR', { year: 'numeric', month: 'long' })}</p>
-                        <p className="text-sm text-muted-foreground">{stats.count} commande{stats.count > 1 ? 's' : ''}</p>
+
+            <Card className="lg:col-span-2 overflow-hidden">
+              <div className="bg-gradient-to-r from-purple-50 to-blue-50 p-6 border-b">
+                <CardHeader className="pb-0">
+                  <CardTitle className="text-lg">Produits les plus achetés</CardTitle>
+                </CardHeader>
+              </div>
+
+              <CardContent className="p-6">
+                {(() => {
+                  // Top products by units sold for the selected month.
+                  // Matches the logic/UX expectation: rank by sum(quantity).
+                  if (!selectedStatsMonth) {
+                    return <p className="text-muted-foreground text-center py-10">Aucune donnée disponible</p>
+                  }
+
+                  const [yStr, mStr] = selectedStatsMonth.split("-")
+                  const y = Number.parseInt(yStr, 10)
+                  const mIndex = Number.parseInt(mStr, 10) - 1
+                  const start = new Date(y, mIndex, 1)
+                  const end = new Date(y, mIndex + 1, 1)
+
+                  const filtered = orders.filter((o) => {
+                    const d = new Date(o.order_date)
+                    if (Number.isNaN(d.getTime())) return false
+                    return d >= start && d < end
+                  })
+
+                  const qtyMap = new Map<string, { product_id: string; name: string; units: number }>()
+
+                  filtered.forEach((order) => {
+                    ;(order.order_items || []).forEach((item: any) => {
+                      const productId = item.product_id
+                      if (!productId) return
+
+                      const qty = Number.parseFloat(item.quantity) || 0
+                      if (qty <= 0) return
+
+                      const existing = qtyMap.get(productId)
+                      if (existing) {
+                        existing.units += qty
+                      } else {
+                        const product = products.find((p) => p.id === productId)
+                        qtyMap.set(productId, {
+                          product_id: productId,
+                          name: item.product_name || product?.name || "Produit",
+                          units: qty,
+                        })
+                      }
+                    })
+                  })
+
+                  const slices = Array.from(qtyMap.values()).sort((a, b) => b.units - a.units)
+
+                  if (slices.length === 0) {
+                    return <p className="text-muted-foreground text-center py-10">Aucune vente ce mois-ci</p>
+                  }
+
+                  const palette = [
+                    "#3b82f6",
+                    "#22c55e",
+                    "#f97316",
+                    "#a855f7",
+                    "#06b6d4",
+                    "#e11d48",
+                    "#84cc16",
+                    "#f59e0b",
+                    "#6366f1",
+                    "#14b8a6",
+                    "#ef4444",
+                    "#8b5cf6",
+                    "#10b981",
+                    "#fb7185",
+                    "#60a5fa",
+                    "#d946ef",
+                  ]
+
+                  const totalUnits = slices.reduce((sum, s) => sum + s.units, 0)
+
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
+                      <div className="md:col-span-1">
+                        <ChartContainer
+                          config={{
+                            units: { label: "Unités", color: "hsl(var(--chart-1))" },
+                          }}
+                          className="w-full"
+                        >
+                          <div className="flex items-center justify-center">
+                            <PieChart width={320} height={240}>
+                              <ChartTooltip content={<ChartTooltipContent />} />
+                              <Pie
+                                data={slices.map((s, idx) => ({
+                                  name: s.name,
+                                  units: s.units,
+                                  fill: palette[idx % palette.length],
+                                }))}
+                                dataKey="units"
+                                nameKey="name"
+                                cx="50%"
+                                cy="50%"
+                                innerRadius={55}
+                                outerRadius={92}
+                                paddingAngle={2}
+                                stroke="rgba(255,255,255,0.95)"
+                                strokeWidth={2}
+                                fill="#8884d8"
+                              />
+                            </PieChart>
+                          </div>
+                        </ChartContainer>
                       </div>
-                      <div className="text-right">
-                        <p className="font-bold text-accent">{formatCurrency(stats.sales)}</p>
+
+                      <div className="md:col-span-2 space-y-4">
+                        <div className="rounded-lg border bg-muted/30 p-4">
+                          <p className="text-xs text-muted-foreground">Best seller</p>
+                          <p className="mt-1 text-lg font-bold">{slices[0]?.name}</p>
+                          <p className="text-sm text-muted-foreground mt-1">
+                            {slices[0]?.units.toLocaleString("fr-FR")} unité(s)
+                          </p>
+                        </div>
+
+                        <div className="rounded-lg border p-4">
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs text-muted-foreground">Répartition (unités)</p>
+                            <p className="text-xs text-muted-foreground">(du mois sélectionné)</p>
+                          </div>
+
+                          <div className="mt-3 space-y-2">
+                            {slices.map((s, idx) => (
+                              <div key={s.product_id} className="flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span
+                                    className="h-3 w-3 rounded-full"
+                                    style={{ backgroundColor: palette[idx % palette.length] }}
+                                  />
+                                  <span className="text-sm truncate">{s.name}</span>
+                                </div>
+                                <div className="text-sm font-medium tabular-nums">
+                                  {s.units.toLocaleString("fr-FR")} ({Math.round((s.units / totalUnits) * 100)}%)
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       </div>
                     </div>
-                  ))}
-                  {getMonthlyStats().length === 0 && (
-                    <p className="text-muted-foreground text-center py-4">Aucune donnée disponible</p>
-                  )}
+                  )
+                })()}
+              </CardContent>
+
+            </Card>
+          </div>
+
+        <div className="flex gap-6">
+          <div className="flex-1">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">CA du mois</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Mois sélectionné</p>
+                    <p className="font-medium">{new Date(selectedStatsMonth + "-01").toLocaleDateString("fr-FR", { year: "numeric", month: "long" })}</p>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      {overviewOrdersCountForSelectedMonth} commande{overviewOrdersCountForSelectedMonth > 1 ? "s" : ""}
+                    </p>
+                  </div>
+
+                  <div className="sm:text-right">
+<p className="text-sm text-muted-foreground">Ventes</p>
+<p className="font-bold text-accent text-xl">{formatCurrency(overviewSalesForSelectedMonth)}</p>
+                  </div>
                 </div>
+
+                {overviewOrdersCountForSelectedMonth === 0 && (
+                  <p className="text-muted-foreground text-center py-4">Aucune donnée disponible</p>
+                )}
               </CardContent>
             </Card>
           </div>
+
+          <div className="flex-1">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">bénéfice du mois</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Mois sélectionné</p>
+                    <p className="font-medium">{new Date(selectedStatsMonth + "-01").toLocaleDateString("fr-FR", { year: "numeric", month: "long" })}</p>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      {overviewOrdersCountForSelectedMonth} commande{overviewOrdersCountForSelectedMonth > 1 ? "s" : ""}
+                    </p>
+                  </div>
+
+                  <div className="sm:text-right">
+<p className="text-sm text-muted-foreground">Profit</p>
+                    <p className="font-bold text-accent text-xl">{formatCurrency(overviewProfitForSelectedMonth)}</p>
+                  </div>
+                </div>
+
+                {overviewOrdersCountForSelectedMonth === 0 && (
+                  <p className="text-muted-foreground text-center py-4">Aucune donnée disponible</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </div>
         </TabsContent>
       </Tabs>
 

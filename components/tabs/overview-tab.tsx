@@ -23,20 +23,28 @@ export default function OverviewTab() {
     fetchMetrics()
   }, [])
 
-  const fetchMetrics = async () => {
+  const fetchMetrics = async (selectedDate?: Date) => {
     try {
       setIsLoading(true)
       const now = new Date()
-      const currentMonth = now.getMonth() + 1
-      const currentYear = now.getFullYear()
+
+      const selectedMonthDate = selectedDate ?? now
+      const currentMonth = selectedMonthDate.getMonth() + 1
+      const currentYear = selectedMonthDate.getFullYear()
+
 
       // Fetch all data
+
       const [productsRes, customersRes, ordersRes, businessOrdersRes] = await Promise.all([
         supabase.from("products").select("*"),
         supabase.from("customers").select("*"),
         supabase.from("customer_orders").select("*"),
         supabase.from("professionnels_orders").select("*"),
       ])
+
+
+
+
 
       console.log("[v0] Orders response:", ordersRes.data)
       console.log("[v0] Business orders response:", businessOrdersRes.data)
@@ -177,7 +185,7 @@ export default function OverviewTab() {
         monthlyOrders,
         totalCustomers: customersRes.data?.length || 0,
         pendingOrders,
-        currentDate: now,
+        currentDate: selectedMonthDate,
       })
     } catch (error) {
       console.error("Error fetching metrics:", error)
@@ -205,13 +213,48 @@ export default function OverviewTab() {
   return (
     <div className="space-y-6">
       {/* Date and title section */}
-      <div className="bg-gradient-to-r from-primary/10 to-accent/10 rounded-lg p-6 border border-border">
-        <div className="flex items-center gap-3 mb-2">
+      <div className="bg-gradient-to-r from-primary/10 to-accent/10 rounded-lg p-6 border border-border space-y-4">
+        <div className="flex items-center gap-3 mb-1">
           <Calendar className="h-5 w-5 text-primary" />
           <h2 className="text-2xl font-bold text-foreground">Tableau de Bord</h2>
         </div>
-        <p className="text-lg text-muted-foreground capitalize">{formatDate(metrics.currentDate)}</p>
+
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <p className="text-lg text-muted-foreground capitalize">{formatDate(metrics.currentDate)}</p>
+
+          {/* Month selector */}
+          <div className="flex items-center gap-3">
+            <label className="text-sm text-muted-foreground font-medium">Mois</label>
+            <select
+              className="bg-card border border-border rounded-md px-3 py-2 text-sm"
+              value={metrics.currentDate.toISOString().slice(0, 7)}
+              onChange={(e) => {
+                const [yStr, mStr] = e.target.value.split("-")
+                const y = Number.parseInt(yStr, 10)
+                const mIndex = Number.parseInt(mStr, 10) - 1
+                const newDate = new Date(y, mIndex, 1)
+                setMetrics((prev: any) => ({ ...prev, currentDate: newDate }))
+                // refresh metrics for selected month
+                fetchMetrics(newDate)
+
+              }}
+            >
+              {Array.from({ length: 12 }).map((_, i) => {
+                const base = metrics.currentDate
+                const d = new Date(base.getFullYear(), base.getMonth() - i, 1)
+
+                const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+                return (
+                  <option key={key} value={key}>
+                    {d.toLocaleDateString("fr-FR", { year: "numeric", month: "long" })}
+                  </option>
+                )
+              })}
+            </select>
+          </div>
+        </div>
       </div>
+
 
       {/* Metrics Grid */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
